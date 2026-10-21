@@ -1436,39 +1436,26 @@ fn smooth(pts: &[[f64; 2]], steps: usize) -> Vec<[f64; 2]> {
     out
 }
 
-/// Smooth line chart in a card. With `with_average`, the curve is the 7-day
-/// average (daily downloads zig-zag between weekdays and weekends) and the raw
-/// daily values are drawn faintly behind it.
-fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_average: bool) {
+/// Smooth line chart through every day's real value. `in_card` gives it its own
+/// card (report charts); the small Following history chart sits in one already.
+fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], in_card: bool) {
     if points.is_empty() {
         return;
     }
     let daily: Vec<[f64; 2]> = points.iter().enumerate().map(|(i, p)| [i as f64, p.1]).collect();
-    let avg: Vec<[f64; 2]> = (0..points.len())
-        .map(|i| {
-            let window = &points[i.saturating_sub(6)..=i];
-            [i as f64, window.iter().map(|p| p.1).sum::<f64>() / window.len() as f64]
-        })
-        .collect();
     let steps = (800 / points.len()).clamp(2, 16);
-    let main_curve = smooth(if with_average { &avg } else { &daily }, steps);
+    let curve = smooth(&daily, steps);
 
     let dates: Vec<String> = points.iter().map(|p| p.0.clone()).collect();
     let dates_axis = dates.clone();
-    let (raw, averaged) = (daily.clone(), avg.clone());
 
     let body = |ui: &mut egui::Ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::text()));
-            if with_average {
-                ui.label(RichText::new("7-day average").small().color(theme::muted()));
-            }
-        });
+        ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::text()));
         ui.add_space(10.0);
 
         Plot::new(("daily", title))
-            .height(if with_average { 260.0 } else { 190.0 })
+            .height(if in_card { 260.0 } else { 190.0 })
             .show_background(false)
             .grid_color(theme::grid())
             .cursor_color(theme::muted().gamma_multiply(0.5))
@@ -1498,24 +1485,11 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_av
                     return None;
                 }
                 let i = i as usize;
-                let date = dates.get(i)?;
-                let day = api::fmt_num(raw.get(i)?[1]);
-                Some(if with_average {
-                    format!("{date}\n{day}  (7-day avg {})", api::fmt_num(averaged.get(i)?[1]))
-                } else {
-                    format!("{date}\n{day}")
-                })
+                Some(format!("{}\n{}", dates.get(i)?, api::fmt_num(daily.get(i)?[1])))
             })
             .show(ui, |plot| {
-                if with_average {
-                    plot.line(
-                        Line::new("daily", PlotPoints::new(daily))
-                            .color(theme::accent().gamma_multiply(0.22))
-                            .width(1.0),
-                    );
-                }
                 plot.line(
-                    Line::new(title, PlotPoints::new(main_curve))
+                    Line::new(title, PlotPoints::new(curve))
                         .color(theme::accent())
                         .width(2.2)
                         .fill(0.0)
@@ -1523,8 +1497,7 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_av
                 );
             });
     };
-    // Report charts get their own card; the small history chart sits inside a Following card already.
-    if with_average {
+    if in_card {
         theme::card().show(ui, body);
         ui.add_space(12.0);
     } else {
@@ -1611,5 +1584,11 @@ mod tests {
         }
         assert!(curve.iter().all(|c| (0.0..=140.0).contains(&c[1])), "overshoot");
         assert!(curve.windows(2).all(|w| w[1][0] > w[0][0]));
+        // Between two days the curve stays between those days' values, so it never shows a peak or dip that isn't in the data.
+        for c in &curve {
+            let i = (c[0].floor() as usize).min(pts.len() - 2);
+            let (lo, hi) = (pts[i][1].min(pts[i + 1][1]), pts[i][1].max(pts[i + 1][1]));
+            assert!((lo - 1e-9..=hi + 1e-9).contains(&c[1]), "{c:?} outside day {i}..{}", i + 1);
+        }
     }
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Download charts now draw the curve through each day's real value. Before, the main line was a trailing 7-day average, which lagged behind spikes and didn't match the numbers. Hovering a day shows its count.
+
 ## 0.1.1
 
 - App icon: the exe, taskbar and Alt+Tab now show PkgStats' own icon (rising bars) instead of the default one.
