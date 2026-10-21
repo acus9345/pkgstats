@@ -32,7 +32,10 @@ fn main() -> eframe::Result {
             .with_title("PkgStats")
             .with_decorations(false)
             .with_inner_size([1100.0, 800.0])
-            .with_min_inner_size([680.0, 480.0]),
+            .with_min_inner_size([680.0, 480.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("valid app icon"),
+            ),
         ..Default::default()
     };
     eframe::run_native(

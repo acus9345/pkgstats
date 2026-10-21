@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- App icon: the exe, taskbar and Alt+Tab now show PkgStats' own icon (rising bars) instead of the default one.
+
 ## 0.1.0
 
 First release.
