@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Debug builds (`cargo run`) no longer open a console window next to the app. Release builds already didn't.
+
 ## 0.1.3
 
 - Title bar keeps the window buttons in place at any width; when the window is narrow, its buttons show icons only (hover for names) so the search box and Go still fit.

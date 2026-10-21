@@ -1,4 +1,5 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// A windowed app in every build, so opening the exe (debug ones from `cargo run` too) never shows a console.
+#![windows_subsystem = "windows"]
 
 mod accounts;
 mod api;
