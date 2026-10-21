@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- The shaded area under download charts stays in place when the top of the curve is scrolled out of view.
+- Debug builds (`cargo run`) optimize their libraries, so they're smooth instead of laggy.
+
 ## 0.1.4
 
 - Debug builds (`cargo run`) no longer open a console window next to the app. Release builds already didn't.

@@ -13,7 +13,7 @@ use api::{Chart, FetchResult, GitHubAccount, Kind, RateLimits, Report, Source};
 use history::History;
 use settings::Settings;
 use eframe::egui::{self, RichText};
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{FilledArea, Line, Plot, PlotPoints};
 use icons::Icon;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -1519,13 +1519,13 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], in_card
                 Some(format!("{}\n{}", dates.get(i)?, api::fmt_num(daily.get(i)?[1])))
             })
             .show(ui, |plot| {
-                plot.line(
-                    Line::new(title, PlotPoints::new(curve))
-                        .color(theme::accent())
-                        .width(2.2)
-                        .fill(0.0)
-                        .fill_alpha(0.10),
-                );
+                // The fill is its own item: a Line's fill only covers the points it draws, so it
+                // vanished wherever the curve's peaks were scrolled out of view.
+                let xs: Vec<f64> = curve.iter().map(|p| p[0]).collect();
+                let ys: Vec<f64> = curve.iter().map(|p| p[1]).collect();
+                let fill = egui::Color32::from(egui::Rgba::from(theme::accent()).multiply(0.10));
+                plot.add(FilledArea::new("fill", &xs, &vec![0.0; xs.len()], &ys).fill_color(fill));
+                plot.line(Line::new(title, PlotPoints::new(curve)).color(theme::accent()).width(2.2));
             });
     };
     if in_card {
