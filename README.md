@@ -36,7 +36,7 @@ In a user report, click a package or repo name to see its stats, or click the ar
 
 ## Window
 
-PkgStats draws its own title bar, like Claude Desktop. The menu, back, Search and Following, the User / Package toggle, the search box and settings sit in it, with minimize, maximize and close on the right. Drag the empty part of the bar to move the window, double-click it to maximize, and drag any edge to resize.
+PkgStats draws its own title bar,the menu, back, Search and Following, the User / Package toggle, the search box and settings sit in it, with minimize, maximize and close on the right. Drag the empty part of the bar to move the window, double-click it to maximize, and drag any edge to resize.
 
 ## Menu and history
 
