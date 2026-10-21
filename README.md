@@ -24,6 +24,10 @@ A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows d
 
 In a user report, click a package or repo name to see its stats, or click the arrow icon next to it to open its page in your browser. **Open page** in a report's header opens that user's or package's page. The back arrow returns to the previous report.
 
+## Menu and history
+
+The menu button (top left) opens a sidebar with Search, Following, History and Settings, plus your followed items and latest searches. **History** lists every search you've run, grouped by day. Click one to run it again, remove single entries, or clear them all. History is saved to `%APPDATA%\PkgStats\history.json` (last 200 searches).
+
 ## Following (daily tracking)
 
 - Click **Follow** (star) on any report, or enter your username on the **Following** page and click **Follow me on all sites**. Sites where the name doesn't exist are skipped.

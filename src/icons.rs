@@ -15,6 +15,8 @@ pub const GOLD: Color32 = Color32::from_rgb(234, 179, 8);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Menu,
+    Clock,
+    Trash,
     Back,
     Search,
     Settings,
@@ -55,6 +57,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             for y in [-0.25, 0.0, 0.25] {
                 painter.line_segment([p(-0.32, y), p(0.32, y)], stroke);
             }
+        }
+        Icon::Clock => {
+            painter.circle_stroke(c, 0.4 * s, stroke);
+            painter.line(vec![p(0.0, -0.24), p(0.0, 0.0), p(0.17, 0.12)], stroke);
+        }
+        Icon::Trash => {
+            painter.line_segment([p(-0.36, -0.24), p(0.36, -0.24)], stroke);
+            painter.line(vec![p(-0.12, -0.24), p(-0.12, -0.36), p(0.12, -0.36), p(0.12, -0.24)], stroke);
+            painter.line(vec![p(-0.27, -0.24), p(-0.22, 0.38), p(0.22, 0.38), p(0.27, -0.24)], stroke);
+            painter.line_segment([p(0.0, -0.08), p(0.0, 0.24)], stroke);
         }
         Icon::Back => {
             painter.line(vec![p(0.12, -0.3), p(-0.18, 0.0), p(0.12, 0.3)], stroke);

@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod history;
 mod icons;
 mod track;
 
 use api::{Chart, FetchResult, Kind, Report, Source};
+use history::History;
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot, PlotPoints};
 use icons::Icon;
@@ -72,6 +74,7 @@ struct Search {
 enum View {
     Search,
     Following,
+    History,
 }
 
 enum Msg {
@@ -89,6 +92,8 @@ enum Action {
     Refresh(Vec<Followed>),
     SelectMetric(String, String),
     FollowMe,
+    RemoveHistory(usize),
+    ClearHistory,
 }
 
 struct App {
@@ -114,8 +119,7 @@ struct App {
     last_auto_refresh: Option<Instant>,
     status: Option<(String, bool)>,
     sidebar_open: bool,
-    /// Most recent first, de-duplicated.
-    recent: Vec<Search>,
+    history: History,
 }
 
 impl Default for App {
@@ -143,7 +147,7 @@ impl Default for App {
             last_auto_refresh: None,
             status: None,
             sidebar_open: false,
-            recent: Vec::new(),
+            history: History::load(),
         }
     }
 }
@@ -178,9 +182,10 @@ impl App {
                 ctx.request_repaint();
             });
         }
-        self.recent.retain(|r| !(r.kind == search.kind && r.query == search.query && r.sources == search.sources));
-        self.recent.insert(0, search.clone());
-        self.recent.truncate(10);
+        if push_history {
+            self.history.add(search.kind, &search.query, search.sources);
+            self.save_history();
+        }
         self.current = Some(search);
     }
 
@@ -196,6 +201,12 @@ impl App {
                 let _ = tx.send(Msg::Follow(key, result, drop_on_error));
                 ctx.request_repaint();
             });
+        }
+    }
+
+    fn save_history(&mut self) {
+        if let Err(e) = self.history.save() {
+            self.status = Some((format!("Could not save history: {e}"), true));
         }
     }
 
@@ -286,6 +297,14 @@ impl App {
                 self.save_store();
             }
             Action::Refresh(entries) => self.refresh_followed(ctx, entries, false),
+            Action::RemoveHistory(index) => {
+                self.history.remove(index);
+                self.save_history();
+            }
+            Action::ClearHistory => {
+                self.history.clear();
+                self.save_history();
+            }
             Action::SelectMetric(key, metric) => {
                 self.chart_metric.insert(key, metric);
             }
@@ -464,6 +483,9 @@ impl App {
             if icons::nav_row(ui, Some(Icon::Star), None, &following, self.view == View::Following).clicked() {
                 self.view = View::Following;
             }
+            if icons::nav_row(ui, Some(Icon::Clock), None, "History", self.view == View::History).clicked() {
+                self.view = View::History;
+            }
             if icons::nav_row(ui, Some(Icon::Settings), None, "Settings", self.show_settings).clicked() {
                 self.show_settings = !self.show_settings;
             }
@@ -480,20 +502,19 @@ impl App {
                 }
             }
 
-            if !self.recent.is_empty() {
-                heading(ui, "RECENT");
-                for r in &self.recent {
-                    let icon = if r.kind == Kind::User { Icon::User } else { Icon::Package };
-                    let sites: Vec<&str> = Source::ALL
-                        .iter()
-                        .zip(r.sources)
-                        .filter(|(_, on)| *on)
-                        .map(|(s, _)| s.label())
-                        .collect();
-                    let resp = icons::nav_row(ui, Some(icon), None, &r.query, false);
-                    if resp.on_hover_text(sites.join(", ")).clicked() {
-                        action = Some(Action::Search(r.clone()));
+            if !self.history.entries.is_empty() {
+                heading(ui, "HISTORY");
+                for e in self.history.entries.iter().take(8) {
+                    let icon = if e.kind == Kind::User { Icon::User } else { Icon::Package };
+                    let resp = icons::nav_row(ui, Some(icon), None, &e.query, false);
+                    if resp.on_hover_text(format!("{} · {}", e.at, site_list(e.sources))).clicked() {
+                        action = Some(Action::Search(Search { kind: e.kind, query: e.query.clone(), sources: e.sources }));
                     }
+                }
+                if self.history.entries.len() > 8
+                    && icons::nav_row(ui, Some(Icon::Dots), None, "Show all", false).clicked()
+                {
+                    self.view = View::History;
                 }
             }
         });
@@ -529,6 +550,60 @@ impl App {
                     .as_ref()
                     .and_then(|c| self.store.find(&track::key(tab.source, c.kind, &c.query)));
                 action = report_view(ui, tab.source, report, followed, &mut self.filter);
+            }
+        });
+        action
+    }
+
+    // -----------------------------------------------------------------------
+    // History page
+
+    fn history_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading(RichText::new("History").strong());
+                ui.add_space(8.0);
+                if !self.history.entries.is_empty()
+                    && icons::button(ui, Some(Icon::Trash), "Clear all", false, None).clicked()
+                {
+                    action = Some(Action::ClearHistory);
+                }
+            });
+            ui.label(RichText::new("Your past searches. Click one to run it again.").weak());
+            ui.add_space(8.0);
+
+            if self.history.entries.is_empty() {
+                ui.label(RichText::new("No searches yet.").weak());
+                return;
+            }
+
+            let mut last_date = "";
+            for (i, e) in self.history.entries.iter().enumerate() {
+                if e.date() != last_date {
+                    last_date = e.date();
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(day_label(last_date)).small().strong().weak());
+                    ui.separator();
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(e.time()).monospace().weak());
+                    let icon = if e.kind == Kind::User { Icon::User } else { Icon::Package };
+                    icons::inline(ui, icon, ui.visuals().weak_text_color());
+                    if ui.link(RichText::new(&e.query).color(ACCENT).strong()).on_hover_text("Search again").clicked() {
+                        action = Some(Action::Search(Search { kind: e.kind, query: e.query.clone(), sources: e.sources }));
+                    }
+                    for (source, on) in Source::ALL.into_iter().zip(e.sources) {
+                        if on {
+                            icons::source_badge(ui, source);
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::icon_button(ui, Icon::Close, "Remove from history").clicked() {
+                            action = Some(Action::RemoveHistory(i));
+                        }
+                    });
+                });
             }
         });
         action
@@ -640,6 +715,7 @@ impl eframe::App for App {
             let main_action = match self.view {
                 View::Search => self.search_view(ui),
                 View::Following => self.following_view(ui),
+                View::History => self.history_view(ui),
             };
             action = action.take().or(main_action);
         });
@@ -837,6 +913,21 @@ fn delta_label(ui: &mut egui::Ui, change: Option<f64>) {
             }
         }
     });
+}
+
+fn site_list(sources: [bool; 4]) -> String {
+    let names: Vec<&str> = Source::ALL.iter().zip(sources).filter(|(_, on)| *on).map(|(s, _)| s.label()).collect();
+    names.join(", ")
+}
+
+/// "TODAY", "YESTERDAY" or the date itself.
+fn day_label(date: &str) -> String {
+    let today = chrono::Local::now().date_naive();
+    match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+        Ok(d) if d == today => "TODAY".into(),
+        Ok(d) if Some(d) == today.pred_opt() => "YESTERDAY".into(),
+        _ => date.to_string(),
+    }
 }
 
 fn drill_down(source: Source, report: &Report, item: &str) -> Search {
