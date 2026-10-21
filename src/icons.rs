@@ -174,6 +174,25 @@ pub fn icon_button_colored(ui: &mut Ui, icon: Icon, color: Option<Color32>, tool
     resp.on_hover_text(tooltip)
 }
 
+/// Small "i" button: hover shows `text` as a tooltip, click pins it open as a popup.
+pub fn info(ui: &mut Ui, text: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+    let popup_id = egui::Popup::default_response_id(&resp);
+    let pinned = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    if ui.is_rect_visible(rect) {
+        let color = if resp.hovered() || pinned { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+        paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), Icon::Info, color);
+    }
+    egui::Popup::from_toggle_button_response(&resp).width(300.0).show(|ui| {
+        ui.label(text);
+    });
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if pinned { resp } else { resp.on_hover_ui(|ui| {
+        ui.set_max_width(300.0);
+        ui.label(text);
+    }) }
+}
+
 /// Button with an optional leading icon. `selected` draws it as an active toggle.
 pub fn button(ui: &mut Ui, icon: Option<Icon>, text: &str, selected: bool, icon_color: Option<Color32>) -> Response {
     let font = TextStyle::Button.resolve(ui.style());

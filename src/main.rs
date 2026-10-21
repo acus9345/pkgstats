@@ -430,15 +430,29 @@ impl App {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new("GitHub token").strong());
-            ui.label("Optional. Raises GitHub's limit from 60 to 5,000 requests per hour.");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("GitHub token").strong());
+                icons::info(
+                    ui,
+                    "Optional. Raises GitHub's limit from 60 to 5,000 requests per hour. \
+                     Defaults to the GITHUB_TOKEN environment variable. Not saved to disk.",
+                );
+            });
             ui.add(egui::TextEdit::singleline(&mut self.github_token).password(true).desired_width(320.0));
-            ui.small("Defaults to the GITHUB_TOKEN environment variable. Not saved to disk.");
 
             ui.separator();
-            ui.label(RichText::new("Daily snapshots").strong());
-            ui.label("While PkgStats is open it records today's numbers for everything you follow.");
-            ui.label("To keep recording when it's closed, add a background task (checks hourly, fetches once a day):");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Daily snapshots").strong());
+                icons::info(
+                    ui,
+                    &format!(
+                        "While PkgStats is open it records today's numbers for everything you follow. \
+                         To keep recording when it's closed, add the background task: it checks hourly \
+                         and fetches once a day.\n\nData file: {}",
+                        Store::path().display()
+                    ),
+                );
+            });
             if cfg!(windows) {
                 ui.horizontal(|ui| {
                     if icons::button(ui, Some(Icon::Check), "Enable background task", false, None).clicked() {
@@ -457,7 +471,6 @@ impl App {
             } else {
                 ui.code("0 * * * * /path/to/pkgstats --snapshot");
             }
-            ui.small(format!("Data file: {}", Store::path().display()));
         });
         self.show_settings = open;
     }
@@ -563,6 +576,7 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("History").strong());
+                icons::info(ui, "Your past searches (last 200). Click one to run it again.");
                 ui.add_space(8.0);
                 if !self.history.entries.is_empty()
                     && icons::button(ui, Some(Icon::Trash), "Clear all", false, None).clicked()
@@ -570,7 +584,6 @@ impl App {
                     action = Some(Action::ClearHistory);
                 }
             });
-            ui.label(RichText::new("Your past searches. Click one to run it again.").weak());
             ui.add_space(8.0);
 
             if self.history.entries.is_empty() {
@@ -617,6 +630,11 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Following").strong());
+                icons::info(
+                    ui,
+                    "A snapshot is saved once a day, so you can see how stars, followers and downloads change. \
+                     Changes appear after the second day. Click a metric to see its history chart.",
+                );
                 ui.add_space(8.0);
                 let busy = !self.refreshing.is_empty();
                 if busy {
@@ -626,18 +644,18 @@ impl App {
                     action = Some(Action::Refresh(self.store.followed.clone()));
                 }
             });
-            ui.label(
-                RichText::new(
-                    "A snapshot is saved once a day, so you can see how stars, followers and downloads change. \
-                     Changes appear after the second day.",
-                )
-                .weak(),
-            );
             ui.add_space(8.0);
 
             egui::Frame::group(ui.style()).corner_radius(8.0).inner_margin(10).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Your username").strong());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Your username").strong());
+                    icons::info(
+                        ui,
+                        "Follows this name on GitHub, npm, PyPI and crates.io. Sites where it doesn't exist \
+                         are skipped. Use the star on any report to follow other users and packages.",
+                    );
+                });
                 ui.horizontal(|ui| {
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.store.my_username)
@@ -654,7 +672,6 @@ impl App {
                         action = Some(Action::FollowMe);
                     }
                 });
-                ui.small("Sites where the name doesn't exist are skipped. Use the star on any report to follow other users and packages.");
             });
             ui.add_space(10.0);
 
@@ -779,7 +796,7 @@ fn report_view(
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("All items ({})", report.items.len())).strong());
             ui.add(egui::TextEdit::singleline(filter).hint_text("filter…").desired_width(180.0));
-            ui.label(RichText::new("click a name for its stats, or the arrow to open its page").small().weak());
+            icons::info(ui, "Click a name to see its stats, or the arrow next to it to open its page in your browser.");
         });
         ui.add_space(4.0);
         let needle = filter.to_lowercase();
@@ -888,7 +905,7 @@ fn followed_card(ui: &mut egui::Ui, f: &Followed, metric: Option<String>, busy: 
             if series.len() >= 2 {
                 daily_chart(ui, &format!("{m}: history"), &series, false);
             } else {
-                ui.label(RichText::new("The history chart appears once there are two days of snapshots.").small().weak());
+                icons::info(ui, "The history chart appears once there are two days of snapshots.");
             }
         }
     });
@@ -958,15 +975,14 @@ fn welcome(ui: &mut egui::Ui) {
         });
         ui.add_space(6.0);
         ui.label("Developer and package stats from GitHub, npm, PyPI and crates.io.");
-        ui.add_space(16.0);
-        ui.label(RichText::new("User").strong());
-        ui.label("Look up a username on each site: followers, stars, packages and downloads.");
-        ui.add_space(8.0);
-        ui.label(RichText::new("Package / repo").strong());
-        ui.label("Look up a package (react, requests, serde) or a repo (rust-lang/rust): download history and details.");
-        ui.add_space(8.0);
-        ui.label(RichText::new("Following").strong());
-        ui.label("Star a report, or enter your username on the Following page, to track changes every day.");
+        ui.add_space(6.0);
+        icons::info(
+            ui,
+            "User: look up a username on each site (followers, stars, packages, downloads).\n\n\
+             Package / repo: look up a package (react, requests, serde) or a repo (rust-lang/rust) \
+             for download history and details.\n\n\
+             Following: star a report, or enter your username on the Following page, to track changes every day.",
+        );
     });
 }
 
