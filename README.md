@@ -1,6 +1,8 @@
 # PkgStats
 
 A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows developer and package stats from **GitHub**, **npm**, **PyPI** and **crates.io**.
+<img width="827" height="600" alt="image" src="https://github.com/user-attachments/assets/2a240d42-7c2e-4b18-bc7d-4e8f54ca62e8" />
+
 
 ## Install
 
