@@ -13,7 +13,7 @@ pub struct Settings {
 }
 
 fn default_accent() -> [u8; 3] {
-    let [r, g, b, _] = crate::theme::BLUE.to_array();
+    let [r, g, b, _] = crate::theme::CLAUDE.to_array();
     [r, g, b]
 }
 

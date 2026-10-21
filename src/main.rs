@@ -962,7 +962,7 @@ impl eframe::App for App {
             }
         }
 
-        let top_frame = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(14, 8));
+        let top_frame = egui::Frame::new().fill(theme::bg()).inner_margin(egui::Margin::symmetric(14, 8));
         egui::Panel::top("top").frame(top_frame).show(ui, |ui| {
             ui.add_space(2.0);
             self.top_bar(ui);
@@ -992,7 +992,7 @@ impl eframe::App for App {
             });
         self.sidebar_open = open;
 
-        let central = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(24, 18));
+        let central = egui::Frame::new().fill(theme::bg()).inner_margin(egui::Margin::symmetric(24, 18));
         egui::CentralPanel::default().frame(central).show(ui, |ui| {
             let main_action = match self.view {
                 View::Search => self.search_view(ui),
@@ -1036,7 +1036,7 @@ fn report_view(
         }
     });
     if !report.subtitle.is_empty() {
-        ui.label(RichText::new(&report.subtitle).color(theme::MUTED));
+        ui.label(RichText::new(&report.subtitle).color(theme::muted()));
     }
     if let Some(note) = &report.note {
         ui.horizontal(|ui| {
@@ -1091,7 +1091,7 @@ fn report_view(
                     }
                     let desc: String = item.description.chars().take(90).collect();
                     let more = item.description.chars().count() > 90;
-                    ui.label(RichText::new(if more { format!("{desc}…") } else { desc }).color(theme::MUTED));
+                    ui.label(RichText::new(if more { format!("{desc}…") } else { desc }).color(theme::muted()));
                     ui.end_row();
                 }
             });
@@ -1279,7 +1279,7 @@ fn metric_cards(ui: &mut egui::Ui, report: &Report, followed: Option<&Followed>)
                         if let Some(change) = followed.and_then(|f| f.change(&m.label, 1)) {
                             ui.horizontal(|ui| {
                                 delta_label(ui, Some(change));
-                                ui.label(RichText::new("vs yesterday").small().color(theme::MUTED));
+                                ui.label(RichText::new("vs yesterday").small().color(theme::muted()));
                             });
                         }
                     });
@@ -1361,9 +1361,9 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_av
     let body = |ui: &mut egui::Ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::TEXT));
+            ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::text()));
             if with_average {
-                ui.label(RichText::new("7-day average").small().color(theme::MUTED));
+                ui.label(RichText::new("7-day average").small().color(theme::muted()));
             }
         });
         ui.add_space(10.0);
@@ -1371,8 +1371,8 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_av
         Plot::new(("daily", title))
             .height(if with_average { 260.0 } else { 190.0 })
             .show_background(false)
-            .grid_color(theme::GRID)
-            .cursor_color(theme::MUTED.gamma_multiply(0.5))
+            .grid_color(theme::grid())
+            .cursor_color(theme::muted().gamma_multiply(0.5))
             .allow_drag(false)
             .allow_zoom(false)
             .allow_scroll(false)
@@ -1452,19 +1452,19 @@ fn bar_rows(ui: &mut egui::Ui, title: &str, bars: &[(String, f64)]) {
             let font = egui::FontId::proportional(13.0);
 
             let short: String = label.chars().take(26).collect();
-            painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, short, font.clone(), theme::TEXT);
+            painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, short, font.clone(), theme::text());
 
             // Faint full-width track, then the value bar on top.
             let track = egui::Rect::from_min_size(
                 egui::pos2(rect.left() + label_w, rect.top() + 7.0),
                 egui::vec2((width - label_w - value_w).max(20.0), rect.height() - 14.0),
             );
-            painter.rect_filled(track, 5.0, theme::GRID.gamma_multiply(0.6));
+            painter.rect_filled(track, 5.0, theme::grid().gamma_multiply(0.6));
             let bar = egui::Rect::from_min_size(track.min, egui::vec2((track.width() * (value / max) as f32).max(4.0), track.height()));
             painter.rect_filled(bar, 5.0, theme::accent().gamma_multiply(if resp.hovered() { 1.0 } else { 0.8 }));
 
             let text = if is_percent { format!("{value:.1}%") } else { api::fmt_compact(*value) };
-            painter.text(egui::pos2(track.right() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme::MUTED);
+            painter.text(egui::pos2(track.right() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme::muted());
             resp.on_hover_text(format!("{label}: {}", if is_percent { format!("{value:.2}%") } else { api::fmt_num(*value) }));
         }
     });
