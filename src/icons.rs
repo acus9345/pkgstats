@@ -14,6 +14,7 @@ pub const GOLD: Color32 = Color32::from_rgb(234, 179, 8);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
+    Menu,
     Back,
     Search,
     Settings,
@@ -50,6 +51,11 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     };
 
     match icon {
+        Icon::Menu => {
+            for y in [-0.25, 0.0, 0.25] {
+                painter.line_segment([p(-0.32, y), p(0.32, y)], stroke);
+            }
+        }
         Icon::Back => {
             painter.line(vec![p(0.12, -0.3), p(-0.18, 0.0), p(0.12, 0.3)], stroke);
         }
@@ -183,6 +189,42 @@ pub fn button(ui: &mut Ui, icon: Option<Icon>, text: &str, selected: bool, icon_
     resp
 }
 
+/// Full-width sidebar row: no border, background only when hovered or selected.
+/// Leads with either an icon or a registry badge.
+pub fn nav_row(ui: &mut Ui, icon: Option<Icon>, badge: Option<Source>, text: &str, selected: bool) -> Response {
+    let font = TextStyle::Button.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let v = ui.style().interact_selectable(&resp, selected);
+        let painter = ui.painter();
+        if selected || resp.hovered() {
+            painter.rect_filled(rect, CornerRadius::same(6), v.weak_bg_fill);
+        }
+        let lead = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(16.0, 16.0));
+        if let Some(source) = badge {
+            painter.rect_filled(lead, 4.0, source_color(source));
+            painter.text(lead.center(), egui::Align2::CENTER_CENTER, initial(source), FontId::proportional(10.5), Color32::WHITE);
+        } else if let Some(icon) = icon {
+            paint(painter, lead.shrink(1.0), icon, v.fg_stroke.color);
+        }
+        // Clip long names (package titles) to the row.
+        let text_pos = pos2(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0);
+        painter.with_clip_rect(rect.shrink2(vec2(4.0, 0.0))).galley(text_pos, galley, v.fg_stroke.color);
+    }
+    resp
+}
+
+fn initial(source: Source) -> &'static str {
+    match source {
+        Source::GitHub => "G",
+        Source::Npm => "n",
+        Source::PyPI => "P",
+        Source::Crates => "C",
+    }
+}
+
 pub fn source_color(source: Source) -> Color32 {
     match source {
         Source::GitHub => Color32::from_rgb(110, 118, 129),
@@ -195,14 +237,8 @@ pub fn source_color(source: Source) -> Color32 {
 /// Small rounded square in the registry's colour with its initial.
 pub fn source_badge(ui: &mut Ui, source: Source) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-    let letter = match source {
-        Source::GitHub => "G",
-        Source::Npm => "n",
-        Source::PyPI => "P",
-        Source::Crates => "C",
-    };
     ui.painter().rect_filled(rect, 4.0, source_color(source));
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, letter, FontId::proportional(11.5), Color32::WHITE);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial(source), FontId::proportional(11.5), Color32::WHITE);
     resp.on_hover_text(source.label())
 }
 

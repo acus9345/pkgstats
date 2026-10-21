@@ -113,6 +113,9 @@ struct App {
     chart_metric: HashMap<String, String>,
     last_auto_refresh: Option<Instant>,
     status: Option<(String, bool)>,
+    sidebar_open: bool,
+    /// Most recent first, de-duplicated.
+    recent: Vec<Search>,
 }
 
 impl Default for App {
@@ -139,6 +142,8 @@ impl Default for App {
             chart_metric: HashMap::new(),
             last_auto_refresh: None,
             status: None,
+            sidebar_open: false,
+            recent: Vec::new(),
         }
     }
 }
@@ -173,6 +178,9 @@ impl App {
                 ctx.request_repaint();
             });
         }
+        self.recent.retain(|r| !(r.kind == search.kind && r.query == search.query && r.sources == search.sources));
+        self.recent.insert(0, search.clone());
+        self.recent.truncate(10);
         self.current = Some(search);
     }
 
@@ -310,6 +318,9 @@ impl App {
         let mut submit = false;
 
         ui.horizontal(|ui| {
+            if icons::icon_button(ui, Icon::Menu, "Menu").clicked() {
+                self.sidebar_open = !self.sidebar_open;
+            }
             ui.add_enabled_ui(!self.back_stack.is_empty(), |ui| {
                 if icons::icon_button(ui, Icon::Back, "Back").clicked()
                     && let Some(prev) = self.back_stack.pop()
@@ -433,6 +444,63 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // Sidebar
+
+    fn sidebar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        let heading = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(10.0);
+            ui.label(RichText::new(text).small().strong().weak());
+            ui.add_space(2.0);
+        };
+
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add_space(6.0);
+            if icons::nav_row(ui, Some(Icon::Search), None, "Search", self.view == View::Search).clicked() {
+                self.view = View::Search;
+            }
+            let following = format!("Following ({})", self.store.followed.len());
+            if icons::nav_row(ui, Some(Icon::Star), None, &following, self.view == View::Following).clicked() {
+                self.view = View::Following;
+            }
+            if icons::nav_row(ui, Some(Icon::Settings), None, "Settings", self.show_settings).clicked() {
+                self.show_settings = !self.show_settings;
+            }
+
+            if !self.store.followed.is_empty() {
+                heading(ui, "FOLLOWED");
+                for f in &self.store.followed {
+                    let resp = icons::nav_row(ui, None, Some(f.source), &f.title, false);
+                    if resp.on_hover_text(format!("{} · {}", f.source.label(), f.title)).clicked() {
+                        let mut sources = [false; 4];
+                        sources[Source::ALL.iter().position(|&s| s == f.source).unwrap_or(0)] = true;
+                        action = Some(Action::Search(Search { kind: f.kind, query: f.query.clone(), sources }));
+                    }
+                }
+            }
+
+            if !self.recent.is_empty() {
+                heading(ui, "RECENT");
+                for r in &self.recent {
+                    let icon = if r.kind == Kind::User { Icon::User } else { Icon::Package };
+                    let sites: Vec<&str> = Source::ALL
+                        .iter()
+                        .zip(r.sources)
+                        .filter(|(_, on)| *on)
+                        .map(|(s, _)| s.label())
+                        .collect();
+                    let resp = icons::nav_row(ui, Some(icon), None, &r.query, false);
+                    if resp.on_hover_text(sites.join(", ")).clicked() {
+                        action = Some(Action::Search(r.clone()));
+                    }
+                }
+            }
+        });
+        action
+    }
+
+    // -----------------------------------------------------------------------
     // Search results
 
     fn search_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
@@ -552,11 +620,28 @@ impl eframe::App for App {
         self.settings_window(&ctx);
 
         let mut action = None;
+        // Borderless sidebar under the top bar, slides in from the left.
+        let sidebar_frame = egui::Frame::side_top_panel(ui.style())
+            .fill(ui.visuals().faint_bg_color)
+            .stroke(egui::Stroke::NONE)
+            .inner_margin(egui::Margin::symmetric(8, 4));
+        let mut open = self.sidebar_open;
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .exact_size(220.0)
+            .show_separator_line(false)
+            .frame(sidebar_frame)
+            .show_collapsible(ui, &mut open, |ui| {
+                action = self.sidebar(ui);
+            });
+        self.sidebar_open = open;
+
         egui::CentralPanel::default().show(ui, |ui| {
-            action = match self.view {
+            let main_action = match self.view {
                 View::Search => self.search_view(ui),
                 View::Following => self.following_view(ui),
             };
+            action = action.take().or(main_action);
         });
         if let Some(action) = action {
             self.apply(&ctx, action);
