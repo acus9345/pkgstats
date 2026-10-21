@@ -311,8 +311,8 @@ pub fn window_button(ui: &mut Ui, icon: Icon, height: f32, tooltip: &str) -> Res
                 fg = Color32::WHITE;
             }
         }
-        let size = if is_close { 13.0 } else { 11.0 };
-        let icon_rect = Rect::from_center_size(rect.center(), vec2(size, size));
+        // Same 10px glyph box for all three, like Windows' own caption buttons.
+        let icon_rect = Rect::from_center_size(rect.center(), vec2(10.0, 10.0));
         if is_close {
             // Thinner cross than the in-app Close icon.
             let s = Stroke::new(1.0, fg);

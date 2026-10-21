@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Title bar keeps the window buttons in place at any width; when the window is narrow, its buttons show icons only (hover for names) so the search box and Go still fit.
+- Pages scroll sideways when the window is too narrow, and scroll bars are always visible instead of only on hover.
+- Source filters, status messages and result tabs wrap instead of running off the edge.
+- The close button's cross is the same size as the minimize and maximize icons.
+
 ## 0.1.2
 
 - Download charts now draw the curve through each day's real value. Before, the main line was a trailing 7-day average, which lagged behind spikes and didn't match the numbers. Hovering a day shows its count.

@@ -281,6 +281,8 @@ fn apply_spacing(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
         style.spacing.interact_size.y = 28.0;
         style.spacing.window_margin = Margin::same(18);
+        // Always-visible scroll bars; egui's default floating ones only show on hover.
+        style.spacing.scroll = egui::style::ScrollStyle::solid();
         style.animation_time = 0.18;
     });
 }

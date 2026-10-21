@@ -461,9 +461,18 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
         }
 
+        // The window buttons and settings get a fixed strip on the right; the app
+        // controls share what's left and never draw over them.
+        const RIGHT_WIDTH: f32 = 3.0 * 46.0 + 8.0 + 26.0 + 8.0;
+        let right = egui::Rect::from_min_max(egui::pos2(rect.right() - RIGHT_WIDTH, rect.top()), rect.max);
+        let left = egui::Rect::from_min_max(rect.min, egui::pos2(right.left() - 8.0, rect.bottom()));
+        // Below this the labels go and the buttons show icons only (with tooltips).
+        let compact = left.width() < 820.0;
+
         let mut submit = false;
         let layout = egui::Layout::left_to_right(egui::Align::Center);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(left).layout(layout), |ui| {
+            ui.set_clip_rect(left.intersect(ui.clip_rect()));
             ui.add_space(8.0);
             if icons::icon_button(ui, Icon::Menu, "Menu").clicked() {
                 self.sidebar_open = !self.sidebar_open;
@@ -477,28 +486,34 @@ impl App {
                 }
             });
             ui.add_space(4.0);
-            if icons::button(ui, Some(Icon::Search), "Search", self.view == View::Search, None).clicked() {
+
+            let following = format!("Following ({})", self.store.followed.len());
+            let bar_button = |ui: &mut egui::Ui, icon: Icon, text: &str, selected: bool| {
+                let resp = icons::button(ui, Some(icon), if compact { "" } else { text }, selected, None);
+                if compact { resp.on_hover_text(text) } else { resp }
+            };
+            if bar_button(ui, Icon::Search, "Search", self.view == View::Search).clicked() {
                 self.view = View::Search;
             }
-            let label = format!("Following ({})", self.store.followed.len());
-            if icons::button(ui, Some(Icon::Star), &label, self.view == View::Following, None).clicked() {
+            if bar_button(ui, Icon::Star, &following, self.view == View::Following).clicked() {
                 self.view = View::Following;
             }
             ui.separator();
-
-            if icons::button(ui, Some(Icon::User), "User", self.kind == Kind::User, None).clicked() {
+            if bar_button(ui, Icon::User, "User", self.kind == Kind::User).clicked() {
                 self.kind = Kind::User;
             }
-            if icons::button(ui, Some(Icon::Package), "Package / repo", self.kind == Kind::Package, None).clicked() {
+            if bar_button(ui, Icon::Package, "Package / repo", self.kind == Kind::Package).clicked() {
                 self.kind = Kind::Package;
             }
 
-            let hint = match self.kind {
-                Kind::User => "username, e.g. sindresorhus",
-                Kind::Package => "package name, or owner/repo for GitHub",
+            let hint = match (self.kind, compact) {
+                (Kind::User, false) => "username, e.g. sindresorhus",
+                (Kind::Package, false) => "package name, or owner/repo for GitHub",
+                (Kind::User, true) => "username",
+                (Kind::Package, true) => "package or owner/repo",
             };
-            // Leave room for Go, settings, the window buttons and some empty, draggable bar.
-            let width = (ui.available_width() - 330.0).clamp(140.0, 460.0);
+            // Leave room for Go and a bit of empty, draggable bar.
+            let width = (ui.available_width() - 100.0).clamp(90.0, 460.0);
             let edit = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(hint).desired_width(width));
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
@@ -506,24 +521,25 @@ impl App {
             if icons::button(ui, Some(Icon::Search), "Go", false, Some(theme::accent())).clicked() {
                 submit = true;
             }
+        });
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                if icons::window_button(ui, Icon::Close, TITLE_BAR_HEIGHT, "Close").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                let (icon, tip) = if maximized { (Icon::WinRestore, "Restore") } else { (Icon::WinMaximize, "Maximize") };
-                if icons::window_button(ui, icon, TITLE_BAR_HEIGHT, tip).clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                }
-                if icons::window_button(ui, Icon::WinMinimize, TITLE_BAR_HEIGHT, "Minimize").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                }
-                ui.add_space(8.0);
-                if icons::icon_button(ui, Icon::Settings, "Settings").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
-            });
+        let right_layout = egui::Layout::right_to_left(egui::Align::Center);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(right).layout(right_layout), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if icons::window_button(ui, Icon::Close, TITLE_BAR_HEIGHT, "Close").clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            let (icon, tip) = if maximized { (Icon::WinRestore, "Restore") } else { (Icon::WinMaximize, "Maximize") };
+            if icons::window_button(ui, icon, TITLE_BAR_HEIGHT, tip).clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+            if icons::window_button(ui, Icon::WinMinimize, TITLE_BAR_HEIGHT, "Minimize").clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            ui.add_space(8.0);
+            if icons::icon_button(ui, Icon::Settings, "Settings").clicked() {
+                self.show_settings = !self.show_settings;
+            }
         });
 
         if submit {
@@ -539,7 +555,7 @@ impl App {
 
     fn sub_bar(&mut self, ui: &mut egui::Ui) {
         if self.view == View::Search {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Sources:");
                 for (i, source) in Source::ALL.into_iter().enumerate() {
                     icons::source_badge(ui, source);
@@ -550,7 +566,7 @@ impl App {
         }
 
         if let Some((msg, is_error)) = self.status.clone() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let color = if is_error { icons::RED } else { ui.visuals().text_color() };
                 icons::inline(ui, Icon::Info, color);
                 ui.label(RichText::new(msg).color(color));
@@ -567,7 +583,7 @@ impl App {
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (i, tab) in self.tabs.iter().enumerate() {
                 let (icon, color) = match &tab.state {
                     TabState::Loading => (Icon::Dots, ui.visuals().weak_text_color()),
@@ -724,7 +740,7 @@ impl App {
             return None;
         };
         let mut action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match &tab.state {
+        page(ui, |ui| match &tab.state {
             TabState::Loading => {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -754,7 +770,7 @@ impl App {
 
     fn accounts_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        page(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Add token");
                 icons::info(
@@ -879,7 +895,7 @@ impl App {
 
     fn history_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        page(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("History").strong());
                 icons::info(ui, "Your past searches (last 200). Click one to run it again.");
@@ -933,7 +949,7 @@ impl App {
 
     fn following_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        page(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Following").strong());
                 icons::info(
@@ -1109,6 +1125,20 @@ fn window_edges(ctx: &egui::Context, dir: Option<egui::ResizeDirection>) {
 
 // ---------------------------------------------------------------------------
 // Views
+
+/// Pages narrower than this scroll sideways instead of squashing their content.
+const MIN_PAGE_WIDTH: f32 = 560.0;
+
+/// Scrollable page body, with a horizontal scroll bar when the window is too narrow.
+fn page<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::ScrollArea::both()
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            ui.set_min_width(MIN_PAGE_WIDTH);
+            add(ui)
+        })
+        .inner
+}
 
 fn report_view(
     ui: &mut egui::Ui,
