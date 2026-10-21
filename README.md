@@ -26,6 +26,10 @@ If there's no exact match (a typo, or a GitHub name without `owner/`), GitHub, n
 
 In a user report, click a package or repo name to see its stats, or click the arrow icon next to it to open its page in your browser. **Open page** in a report's header opens that user's or package's page. The back arrow returns to the previous report.
 
+## Window
+
+PkgStats draws its own title bar, like Claude Desktop. The menu, back, Search and Following, the User / Package toggle, the search box and settings sit in it, with minimize, maximize and close on the right. Drag the empty part of the bar to move the window, double-click it to maximize, and drag any edge to resize.
+
 ## Menu and history
 
 The menu button (top left) opens a sidebar with Search, Following, History and Settings, plus your followed items and latest searches. **History** lists every search you've run, grouped by day. Click one to run it again, remove single entries, or clear them all. History is saved to `%APPDATA%\PkgStats\history.json` (last 200 searches).

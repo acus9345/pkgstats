@@ -30,6 +30,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PkgStats")
+            .with_decorations(false)
             .with_inner_size([1100.0, 800.0])
             .with_min_inner_size([680.0, 480.0]),
         ..Default::default()
@@ -66,6 +67,10 @@ fn saved_or_env_token() -> Option<String> {
 
 /// How often the running app checks whether followed items need today's snapshot.
 const AUTO_REFRESH_EVERY: Duration = Duration::from_secs(30 * 60);
+/// Height of the custom title bar (the window has no native frame).
+const TITLE_BAR_HEIGHT: f32 = 40.0;
+/// How close to the window edge the pointer must be to resize.
+const RESIZE_EDGE: f32 = 5.0;
 const TASK_NAME: &str = "PkgStats daily snapshot";
 
 enum TabState {
@@ -437,11 +442,26 @@ impl App {
     // -----------------------------------------------------------------------
     // Top bar
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    /// Custom window frame: app controls on the left, window buttons on the right,
+    /// and the empty space in between drags the window (double-click maximizes).
+    fn title_bar(&mut self, ui: &mut egui::Ui, on_resize_edge: bool) {
         let ctx = ui.ctx().clone();
-        let mut submit = false;
+        let rect = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), TITLE_BAR_HEIGHT));
 
-        ui.horizontal(|ui| {
+        // Registered before the widgets, so buttons and the search box on top win their clicks.
+        let bar = ui.interact(rect, egui::Id::unique("title_bar"), egui::Sense::click_and_drag());
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if bar.drag_started_by(egui::PointerButton::Primary) && !on_resize_edge {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if bar.double_clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+
+        let mut submit = false;
+        let layout = egui::Layout::left_to_right(egui::Align::Center);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
+            ui.add_space(8.0);
             if icons::icon_button(ui, Icon::Menu, "Menu").clicked() {
                 self.sidebar_open = !self.sidebar_open;
             }
@@ -453,6 +473,7 @@ impl App {
                     self.start_search(&ctx, prev, false);
                 }
             });
+            ui.add_space(4.0);
             if icons::button(ui, Some(Icon::Search), "Search", self.view == View::Search, None).clicked() {
                 self.view = View::Search;
             }
@@ -473,22 +494,47 @@ impl App {
                 Kind::User => "username, e.g. sindresorhus",
                 Kind::Package => "package name, or owner/repo for GitHub",
             };
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut self.query)
-                    .hint_text(hint)
-                    .desired_width((ui.available_width() - 120.0).max(140.0)),
-            );
+            // Leave room for Go, settings, the window buttons and some empty, draggable bar.
+            let width = (ui.available_width() - 330.0).clamp(140.0, 460.0);
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(hint).desired_width(width));
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
             }
             if icons::button(ui, Some(Icon::Search), "Go", false, Some(theme::accent())).clicked() {
                 submit = true;
             }
-            if icons::icon_button(ui, Icon::Settings, "Settings").clicked() {
-                self.show_settings = !self.show_settings;
-            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                if icons::window_button(ui, Icon::Close, TITLE_BAR_HEIGHT, "Close").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                let (icon, tip) = if maximized { (Icon::WinRestore, "Restore") } else { (Icon::WinMaximize, "Maximize") };
+                if icons::window_button(ui, icon, TITLE_BAR_HEIGHT, tip).clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+                if icons::window_button(ui, Icon::WinMinimize, TITLE_BAR_HEIGHT, "Minimize").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                ui.add_space(8.0);
+                if icons::icon_button(ui, Icon::Settings, "Settings").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
+            });
         });
 
+        if submit {
+            let search = Search { kind: self.kind, query: self.query.clone(), sources: self.sources };
+            self.start_search(&ctx, search, true);
+        }
+    }
+
+    /// What's left under the title bar: source filters, status line and result tabs.
+    fn has_sub_bar(&self) -> bool {
+        self.view == View::Search || self.status.is_some()
+    }
+
+    fn sub_bar(&mut self, ui: &mut egui::Ui) {
         if self.view == View::Search {
             ui.horizontal(|ui| {
                 ui.label("Sources:");
@@ -511,9 +557,9 @@ impl App {
             });
         }
 
-        if submit {
-            let search = Search { kind: self.kind, query: self.query.clone(), sources: self.sources };
-            self.start_search(&ctx, search, true);
+        if self.view == View::Search && !self.tabs.is_empty() {
+            ui.separator();
+            self.tab_strip(ui);
         }
     }
 
@@ -962,16 +1008,18 @@ impl eframe::App for App {
             }
         }
 
-        let top_frame = egui::Frame::new().fill(theme::bg()).inner_margin(egui::Margin::symmetric(14, 8));
-        egui::Panel::top("top").frame(top_frame).show(ui, |ui| {
-            ui.add_space(2.0);
-            self.top_bar(ui);
-            if self.view == View::Search && !self.tabs.is_empty() {
-                ui.separator();
-                self.tab_strip(ui);
-            }
-            ui.add_space(4.0);
-        });
+        let resize_dir = resize_direction(&ctx);
+
+        egui::Panel::top("title_bar")
+            .exact_size(TITLE_BAR_HEIGHT)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(theme::bg()))
+            .show(ui, |ui| self.title_bar(ui, resize_dir.is_some()));
+
+        if self.has_sub_bar() {
+            let sub_frame = egui::Frame::new().fill(theme::bg()).inner_margin(egui::Margin::symmetric(14, 6));
+            egui::Panel::top("sub_bar").frame(sub_frame).show(ui, |ui| self.sub_bar(ui));
+        }
 
         self.settings_window(&ctx);
 
@@ -1005,6 +1053,54 @@ impl eframe::App for App {
         if let Some(action) = action {
             self.apply(&ctx, action);
         }
+
+        window_edges(&ctx, resize_dir);
+    }
+}
+
+/// Which edge or corner the pointer is on, if the window can be resized there.
+fn resize_direction(ctx: &egui::Context) -> Option<egui::ResizeDirection> {
+    use egui::ResizeDirection::*;
+    if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return None;
+    }
+    let rect = ctx.viewport_rect();
+    let pos = ctx.input(|i| i.pointer.hover_pos())?;
+    let left = pos.x - rect.left() < RESIZE_EDGE;
+    let right = rect.right() - pos.x < RESIZE_EDGE;
+    let top = pos.y - rect.top() < RESIZE_EDGE;
+    let bottom = rect.bottom() - pos.y < RESIZE_EDGE;
+    Some(match (left, right, top, bottom) {
+        (true, _, true, _) => NorthWest,
+        (_, true, true, _) => NorthEast,
+        (true, _, _, true) => SouthWest,
+        (_, true, _, true) => SouthEast,
+        (true, ..) => West,
+        (_, true, ..) => East,
+        (_, _, true, _) => North,
+        (_, _, _, true) => South,
+        _ => return None,
+    })
+}
+
+/// Without a native frame the app provides its own edge resizing and a 1px outline.
+fn window_edges(ctx: &egui::Context, dir: Option<egui::ResizeDirection>) {
+    use egui::ResizeDirection::*;
+    if let Some(dir) = dir {
+        ctx.set_cursor_icon(match dir {
+            North | South => egui::CursorIcon::ResizeVertical,
+            East | West => egui::CursorIcon::ResizeHorizontal,
+            NorthWest | SouthEast => egui::CursorIcon::ResizeNwSe,
+            NorthEast | SouthWest => egui::CursorIcon::ResizeNeSw,
+        });
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        }
+    }
+    if !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("window_outline")));
+        let outline = egui::Stroke::new(1.0, theme::palette().border_strong);
+        painter.rect_stroke(ctx.viewport_rect(), 0.0, outline, egui::StrokeKind::Inside);
     }
 }
 

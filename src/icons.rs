@@ -15,6 +15,9 @@ pub const GOLD: Color32 = Color32::from_rgb(234, 179, 8);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Menu,
+    WinMinimize,
+    WinMaximize,
+    WinRestore,
     Link,
     Clock,
     Trash,
@@ -58,6 +61,19 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             for y in [-0.25, 0.0, 0.25] {
                 painter.line_segment([p(-0.32, y), p(0.32, y)], stroke);
             }
+        }
+        // Window controls use thin 1px lines, like Windows' own caption buttons.
+        Icon::WinMinimize => {
+            painter.line_segment([p(-0.32, 0.0), p(0.32, 0.0)], Stroke::new(1.0, color));
+        }
+        Icon::WinMaximize => {
+            let r = Rect::from_min_max(p(-0.3, -0.3), p(0.3, 0.3));
+            painter.rect_stroke(r, CornerRadius::same(1), Stroke::new(1.0, color), StrokeKind::Middle);
+        }
+        Icon::WinRestore => {
+            let front = Rect::from_min_max(p(-0.32, -0.18), p(0.18, 0.32));
+            painter.rect_stroke(front, CornerRadius::same(1), Stroke::new(1.0, color), StrokeKind::Middle);
+            painter.line(vec![p(-0.18, -0.18), p(-0.18, -0.32), p(0.32, -0.32), p(0.32, 0.18), p(0.18, 0.18)], Stroke::new(1.0, color));
         }
         Icon::Link => {
             // Two chain links: rotated ovals overlapping along the diagonal.
@@ -279,6 +295,34 @@ pub fn source_color(source: Source) -> Color32 {
         Source::PyPI => Color32::from_rgb(55, 117, 169),
         Source::Crates => Color32::from_rgb(222, 109, 42),
     }
+}
+
+/// Minimize / maximize / close button for the custom title bar: full bar
+/// height, no border, background only on hover (red for close, like Windows).
+pub fn window_button(ui: &mut Ui, icon: Icon, height: f32, tooltip: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, height), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let is_close = icon == Icon::Close;
+        let mut fg = ui.visuals().text_color();
+        if resp.hovered() {
+            let fill = if is_close { Color32::from_rgb(196, 43, 28) } else { ui.visuals().widgets.hovered.weak_bg_fill };
+            ui.painter().rect_filled(rect, 0.0, fill);
+            if is_close {
+                fg = Color32::WHITE;
+            }
+        }
+        let size = if is_close { 13.0 } else { 11.0 };
+        let icon_rect = Rect::from_center_size(rect.center(), vec2(size, size));
+        if is_close {
+            // Thinner cross than the in-app Close icon.
+            let s = Stroke::new(1.0, fg);
+            ui.painter().line_segment([icon_rect.left_top(), icon_rect.right_bottom()], s);
+            ui.painter().line_segment([icon_rect.left_bottom(), icon_rect.right_top()], s);
+        } else {
+            paint(ui.painter(), icon_rect, icon, fg);
+        }
+    }
+    resp.on_hover_text(tooltip)
 }
 
 /// Round colour swatch; a ring marks the selected one.
