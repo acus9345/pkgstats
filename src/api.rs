@@ -169,11 +169,22 @@ impl Http {
         match result {
             Ok(resp) => resp.into_json::<Value>().map_err(|e| format!("Bad JSON from {url}: {e}")),
             Err(ureq::Error::Status(404, _)) => Err(NOT_FOUND.into()),
-            Err(ureq::Error::Status(403 | 429, resp)) if url.contains("api.github.com") => {
-                let reset = resp.header("x-ratelimit-reset").unwrap_or("?").to_owned();
-                Err(format!(
-                    "GitHub rate limit hit (resets at unix time {reset}). Set a token in Settings or the GITHUB_TOKEN env var."
-                ))
+            Err(ureq::Error::Status(401, _)) if is_github => {
+                Err("GitHub rejected the token (401). It may be expired or revoked.".into())
+            }
+            Err(ureq::Error::Status(403 | 429, resp)) if is_github => {
+                let reset = resp
+                    .header("x-ratelimit-reset")
+                    .and_then(|t| t.parse::<i64>().ok())
+                    .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                    .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                    .unwrap_or_else(|| "soon".into());
+                let hint = if self.github_token.is_some() {
+                    ""
+                } else {
+                    " Add a GitHub token (menu → Add token) for higher limits."
+                };
+                Err(format!("GitHub rate limit reached, resets at {reset}.{hint}"))
             }
             Err(ureq::Error::Status(429, _)) => Err(RATE_LIMITED.into()),
             Err(ureq::Error::Status(code, _)) => Err(format!("HTTP {code} from {url}")),
@@ -272,6 +283,40 @@ fn enc(segment: &str) -> String {
 
 // ---------------------------------------------------------------------------
 // GitHub
+
+#[derive(Clone, Debug)]
+pub struct GitHubAccount {
+    pub login: String,
+    pub name: String,
+    pub url: String,
+}
+
+/// Current GitHub API allowance for this client (token or IP).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RateLimits {
+    pub core_limit: f64,
+    pub core_remaining: f64,
+    pub search_limit: f64,
+    pub search_remaining: f64,
+}
+
+/// Who a token belongs to; fails if GitHub rejects it.
+pub fn github_account(token: &str) -> Result<GitHubAccount, String> {
+    let u = Http::new(Some(token)).get_json_uncached("https://api.github.com/user")?;
+    Ok(GitHubAccount { login: s(&u, "login"), name: s(&u, "name"), url: s(&u, "html_url") })
+}
+
+/// Doesn't count against the limit itself.
+pub fn github_rate_limits(token: Option<&str>) -> Result<RateLimits, String> {
+    let r = Http::new(token).get_json_uncached("https://api.github.com/rate_limit")?;
+    let res = &r["resources"];
+    Ok(RateLimits {
+        core_limit: n(&res["core"], "limit"),
+        core_remaining: n(&res["core"], "remaining"),
+        search_limit: n(&res["search"], "limit"),
+        search_remaining: n(&res["search"], "remaining"),
+    })
+}
 
 fn github_user(http: &Http, user: &str) -> FetchResult {
     let u = http.get_json(&format!("https://api.github.com/users/{}", enc(user)))?;
@@ -1107,6 +1152,15 @@ mod tests {
                 r.items.len()
             );
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_github_account_checks() {
+        let limits = github_rate_limits(None).unwrap();
+        assert_eq!((limits.core_limit, limits.search_limit), (60.0, 10.0));
+        let err = github_account("ghp_not_a_real_token").unwrap_err();
+        assert!(err.contains("401"), "{err}");
     }
 
     #[test]

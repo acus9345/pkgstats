@@ -15,6 +15,7 @@ pub const GOLD: Color32 = Color32::from_rgb(234, 179, 8);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Menu,
+    Link,
     Clock,
     Trash,
     Back,
@@ -56,6 +57,21 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Menu => {
             for y in [-0.25, 0.0, 0.25] {
                 painter.line_segment([p(-0.32, y), p(0.32, y)], stroke);
+            }
+        }
+        Icon::Link => {
+            // Two chain links: rotated ovals overlapping along the diagonal.
+            let (cos, sin) = ((PI / 4.0).cos(), -(PI / 4.0).sin());
+            for offset in [-0.14, 0.14] {
+                let center = p(offset, -offset);
+                let pts: Vec<Pos2> = (0..32)
+                    .map(|i| {
+                        let t = i as f32 * TAU / 32.0;
+                        let (x, y) = (0.24 * t.cos() * s, 0.12 * t.sin() * s);
+                        pos2(center.x + x * cos - y * sin, center.y + x * sin + y * cos)
+                    })
+                    .collect();
+                painter.add(Shape::closed_line(pts, stroke));
             }
         }
         Icon::Clock => {
@@ -263,6 +279,21 @@ pub fn source_color(source: Source) -> Color32 {
         Source::PyPI => Color32::from_rgb(55, 117, 169),
         Source::Crates => Color32::from_rgb(222, 109, 42),
     }
+}
+
+/// Round colour swatch; a ring marks the selected one.
+pub fn swatch(ui: &mut Ui, color: Color32, selected: bool, tooltip: &str) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let c = rect.center();
+        if selected {
+            ui.painter().circle_stroke(c, 14.0, Stroke::new(2.0, ui.visuals().strong_text_color()));
+        } else if resp.hovered() {
+            ui.painter().circle_stroke(c, 14.0, Stroke::new(1.0, ui.visuals().weak_text_color()));
+        }
+        ui.painter().circle_filled(c, 10.5, color);
+    }
+    resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Small rounded square in the registry's colour with its initial.

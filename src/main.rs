@@ -1,13 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod accounts;
 mod api;
 mod history;
 mod icons;
+mod settings;
+mod theme;
 mod track;
 
-use api::{Chart, FetchResult, Kind, Report, Source};
+use api::{Chart, FetchResult, GitHubAccount, Kind, RateLimits, Report, Source};
 use history::History;
-use eframe::egui::{self, Color32, RichText};
+use settings::Settings;
+use eframe::egui::{self, RichText};
 use egui_plot::{Line, Plot, PlotPoints};
 use icons::Icon;
 use std::collections::{HashMap, HashSet};
@@ -30,12 +34,20 @@ fn main() -> eframe::Result {
             .with_min_inner_size([680.0, 480.0]),
         ..Default::default()
     };
-    eframe::run_native("PkgStats", options, Box::new(|_cc| Ok(Box::new(App::default()))))
+    eframe::run_native(
+        "PkgStats",
+        options,
+        Box::new(|cc| {
+            let app = App::default();
+            theme::apply(&cc.egui_ctx, app.settings.accent());
+            Ok(Box::new(app))
+        }),
+    )
 }
 
 fn snapshot_followed() {
     let mut store = Store::load();
-    let token = std::env::var("GITHUB_TOKEN").ok();
+    let token = saved_or_env_token();
     for f in store.stale() {
         match api::fetch(f.source, f.kind, &f.query, token.as_deref()) {
             Ok(report) => {
@@ -47,7 +59,11 @@ fn snapshot_followed() {
     let _ = store.save();
 }
 
-const ACCENT: Color32 = Color32::from_rgb(96, 165, 250);
+/// The connected account's token, else the GITHUB_TOKEN environment variable.
+fn saved_or_env_token() -> Option<String> {
+    accounts::load_github_token().or_else(|| std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()))
+}
+
 /// How often the running app checks whether followed items need today's snapshot.
 const AUTO_REFRESH_EVERY: Duration = Duration::from_secs(30 * 60);
 const TASK_NAME: &str = "PkgStats daily snapshot";
@@ -75,6 +91,7 @@ enum View {
     Search,
     Following,
     History,
+    Accounts,
 }
 
 enum Msg {
@@ -82,6 +99,9 @@ enum Msg {
     Search(u64, Source, FetchResult),
     /// (followed key, result, remove the entry if it fails)
     Follow(String, FetchResult, bool),
+    /// Result of checking a token: (token, account, limits); `save` = store it when valid.
+    Account(Result<(String, GitHubAccount, RateLimits), String>, bool),
+    Limits(Result<RateLimits, String>),
 }
 
 /// Something the user clicked inside a report or the Following page.
@@ -94,6 +114,10 @@ enum Action {
     FollowMe,
     RemoveHistory(usize),
     ClearHistory,
+    OpenAccounts,
+    /// Validate and save a pasted GitHub token.
+    ConnectGitHub(String),
+    DisconnectGitHub,
 }
 
 struct App {
@@ -120,6 +144,13 @@ struct App {
     status: Option<(String, bool)>,
     sidebar_open: bool,
     history: History,
+    account: Option<GitHubAccount>,
+    limits: Option<RateLimits>,
+    token_input: String,
+    connecting: bool,
+    account_error: Option<String>,
+    account_checked: bool,
+    settings: Settings,
 }
 
 impl Default for App {
@@ -138,7 +169,7 @@ impl Default for App {
             rx,
             back_stack: Vec::new(),
             current: None,
-            github_token: std::env::var("GITHUB_TOKEN").unwrap_or_default(),
+            github_token: saved_or_env_token().unwrap_or_default(),
             show_settings: false,
             filter: String::new(),
             store,
@@ -148,6 +179,13 @@ impl Default for App {
             status: None,
             sidebar_open: false,
             history: History::load(),
+            account: None,
+            limits: None,
+            token_input: String::new(),
+            connecting: false,
+            account_error: None,
+            account_checked: false,
+            settings: Settings::load(),
         }
     }
 }
@@ -204,6 +242,30 @@ impl App {
         }
     }
 
+    /// Check a token in the background; `save` stores it once GitHub accepts it.
+    fn check_token(&mut self, ctx: &egui::Context, token: String, save: bool) {
+        self.connecting = true;
+        self.account_error = None;
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = api::github_account(&token).map(|account| {
+                let limits = api::github_rate_limits(Some(&token)).unwrap_or_default();
+                (token, account, limits)
+            });
+            let _ = tx.send(Msg::Account(result, save));
+            ctx.request_repaint();
+        });
+    }
+
+    fn refresh_limits(&self, ctx: &egui::Context) {
+        let (tx, ctx, token) = (self.tx.clone(), ctx.clone(), self.github_token.clone());
+        std::thread::spawn(move || {
+            let token = Some(token).filter(|t| !t.is_empty());
+            let _ = tx.send(Msg::Limits(api::github_rate_limits(token.as_deref())));
+            ctx.request_repaint();
+        });
+    }
+
     fn save_history(&mut self) {
         if let Err(e) = self.history.save() {
             self.status = Some((format!("Could not save history: {e}"), true));
@@ -254,6 +316,31 @@ impl App {
                         Err(e) => self.store.record_error(&key, e),
                     }
                 }
+                Msg::Account(result, save) => {
+                    self.connecting = false;
+                    match result {
+                        Ok((token, account, limits)) => {
+                            if save && let Err(e) = accounts::save_github_token(&token) {
+                                self.account_error = Some(format!("Connected, but couldn't save the token: {e}"));
+                            }
+                            self.github_token = token;
+                            self.token_input.clear();
+                            self.account = Some(account);
+                            self.limits = Some(limits);
+                        }
+                        // A saved token GitHub now rejects would break every request: drop it.
+                        Err(e) if !save && e.contains("401") => {
+                            self.github_token.clear();
+                            self.account_error = Some(format!("Your saved GitHub token stopped working. {e} Connect again."));
+                        }
+                        Err(e) => self.account_error = Some(e),
+                    }
+                }
+                Msg::Limits(result) => {
+                    if let Ok(limits) = result {
+                        self.limits = Some(limits);
+                    }
+                }
             }
         }
         if changed {
@@ -297,6 +384,24 @@ impl App {
                 self.save_store();
             }
             Action::Refresh(entries) => self.refresh_followed(ctx, entries, false),
+            Action::OpenAccounts => {
+                self.view = View::Accounts;
+                self.refresh_limits(ctx);
+            }
+            Action::ConnectGitHub(token) => {
+                let token = token.trim().to_string();
+                if !token.is_empty() {
+                    self.check_token(ctx, token, true);
+                }
+            }
+            Action::DisconnectGitHub => {
+                if let Err(e) = accounts::delete_github_token() {
+                    self.account_error = Some(format!("Couldn't remove the saved token: {e}"));
+                }
+                self.github_token.clear();
+                self.account = None;
+                self.refresh_limits(ctx);
+            }
             Action::RemoveHistory(index) => {
                 self.history.remove(index);
                 self.save_history();
@@ -376,7 +481,7 @@ impl App {
             if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
             }
-            if icons::button(ui, Some(Icon::Search), "Go", false, Some(ACCENT)).clicked() {
+            if icons::button(ui, Some(Icon::Search), "Go", false, Some(theme::accent())).clicked() {
                 submit = true;
             }
             if icons::icon_button(ui, Icon::Settings, "Settings").clicked() {
@@ -431,15 +536,35 @@ impl App {
         let mut open = self.show_settings;
         egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("GitHub token").strong());
-                icons::info(
-                    ui,
-                    "Optional. Raises GitHub's limit from 60 to 5,000 requests per hour. \
-                     Defaults to the GITHUB_TOKEN environment variable. Not saved to disk.",
-                );
+                ui.label(RichText::new("App style").strong());
+                icons::info(ui, "Accent colour for buttons, links, charts, bars and highlights. Saved for next time.");
             });
-            ui.add(egui::TextEdit::singleline(&mut self.github_token).password(true).desired_width(320.0));
+            let current = self.settings.accent();
+            let mut picked = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (name, color) in theme::PRESETS {
+                    if icons::swatch(ui, color, color == current, name).clicked() {
+                        picked = Some(color);
+                    }
+                }
+                ui.add_space(6.0);
+                let mut custom = current;
+                let is_custom = !theme::PRESETS.iter().any(|(_, c)| *c == current);
+                let resp = egui::color_picker::color_edit_button_srgba(ui, &mut custom, egui::color_picker::Alpha::Opaque);
+                if resp.on_hover_text(if is_custom { "Custom colour (selected)" } else { "Custom colour" }).changed() {
+                    picked = Some(custom);
+                }
+            });
+            if let Some(color) = picked {
+                theme::set_accent(ctx, color);
+                self.settings.set_accent(color);
+                if let Err(e) = self.settings.save() {
+                    self.status = Some((format!("Could not save settings: {e}"), true));
+                }
+            }
 
+            ui.add_space(6.0);
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Daily snapshots").strong());
@@ -498,6 +623,13 @@ impl App {
             }
             if icons::nav_row(ui, Some(Icon::Clock), None, "History", self.view == View::History).clicked() {
                 self.view = View::History;
+            }
+            let accounts_label = match &self.account {
+                Some(a) => format!("Token · @{}", a.login),
+                None => "Add token".to_string(),
+            };
+            if icons::nav_row(ui, Some(Icon::Link), None, &accounts_label, self.view == View::Accounts).clicked() {
+                action = Some(Action::OpenAccounts);
             }
             if icons::nav_row(ui, Some(Icon::Settings), None, "Settings", self.show_settings).clicked() {
                 self.show_settings = !self.show_settings;
@@ -569,6 +701,131 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // Add token page
+
+    fn accounts_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Add token");
+                icons::info(
+                    ui,
+                    "A GitHub token raises the number of requests PkgStats can make. \
+                     It's kept in Windows Credential Manager, never in PkgStats' files.",
+                );
+            });
+            ui.add_space(8.0);
+
+            theme::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    icons::source_badge(ui, Source::GitHub);
+                    ui.label(RichText::new("GitHub").strong().size(16.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &self.account {
+                        Some(a) => {
+                            let who = if a.name.is_empty() { format!("@{}", a.login) } else { format!("{} (@{})", a.name, a.login) };
+                            ui.label(RichText::new(format!("Token added · {who}")).color(icons::GREEN));
+                            icons::inline(ui, Icon::Check, icons::GREEN);
+                        }
+                        None => {
+                            ui.label(RichText::new("No token").weak());
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+
+                let connected = self.account.is_some();
+                egui::Grid::new("github_benefits").spacing([28.0, 6.0]).show(ui, |ui| {
+                    for h in ["", "Without token", "With token", "Your limit now"] {
+                        ui.label(RichText::new(h).small().strong());
+                    }
+                    ui.end_row();
+                    let now = |remaining: f64, limit: f64| match self.limits {
+                        Some(_) if limit > 0.0 => format!("{} of {} left", api::fmt_num(remaining), api::fmt_num(limit)),
+                        _ => "—".into(),
+                    };
+                    let l = self.limits.unwrap_or_default();
+                    let rows = [
+                        ("Searches per minute", "10", "30", now(l.search_remaining, l.search_limit)),
+                        ("Requests per hour", "60", "5,000", now(l.core_remaining, l.core_limit)),
+                    ];
+                    for (label, without, with, current) in rows {
+                        ui.label(label);
+                        let (a, b) = if connected {
+                            (RichText::new(without).weak(), RichText::new(with).strong().color(icons::GREEN))
+                        } else {
+                            (RichText::new(without).strong(), RichText::new(with).color(icons::GREEN))
+                        };
+                        ui.label(a);
+                        ui.label(b);
+                        ui.label(RichText::new(current).weak());
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(10.0);
+
+                if let Some(a) = &self.account {
+                    ui.horizontal(|ui| {
+                        if icons::button(ui, Some(Icon::External), "Open profile", false, None).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(&a.url));
+                        }
+                        if icons::button(ui, Some(Icon::Close), "Remove token", false, None).clicked() {
+                            action = Some(Action::DisconnectGitHub);
+                        }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        if icons::button(ui, Some(Icon::External), "Create a token on GitHub", false, None).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                "https://github.com/settings/tokens/new?description=PkgStats&scopes=",
+                            ));
+                        }
+                        icons::info(
+                            ui,
+                            "Opens GitHub's token page with the name filled in. Leave every scope unticked: \
+                             PkgStats only reads public data. Click Generate token, copy it and paste it below.",
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(&mut self.token_input)
+                                .password(true)
+                                .hint_text("paste token (ghp_… or github_pat_…)")
+                                .desired_width(320.0),
+                        );
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if self.connecting {
+                            ui.spinner();
+                        } else if icons::button(ui, Some(Icon::Link), "Add token", false, Some(theme::accent())).clicked() || enter {
+                            action = Some(Action::ConnectGitHub(self.token_input.clone()));
+                        }
+                    });
+                }
+                if let Some(e) = &self.account_error {
+                    ui.label(RichText::new(e).color(icons::RED));
+                }
+            });
+            ui.add_space(10.0);
+
+            theme::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for source in [Source::Npm, Source::PyPI, Source::Crates] {
+                    ui.horizontal(|ui| {
+                        icons::source_badge(ui, source);
+                        ui.label(RichText::new(source.label()).strong());
+                        ui.label(RichText::new("No token needed").weak());
+                        icons::info(
+                            ui,
+                            &format!("{}'s public stats have the same limits with or without a token.", source.label()),
+                        );
+                    });
+                }
+            });
+        });
+        action
+    }
+
+    // -----------------------------------------------------------------------
     // History page
 
     fn history_view(&mut self, ui: &mut egui::Ui) -> Option<Action> {
@@ -603,7 +860,7 @@ impl App {
                     ui.label(RichText::new(e.time()).monospace().weak());
                     let icon = if e.kind == Kind::User { Icon::User } else { Icon::Package };
                     icons::inline(ui, icon, ui.visuals().weak_text_color());
-                    if ui.link(RichText::new(&e.query).color(ACCENT).strong()).on_hover_text("Search again").clicked() {
+                    if ui.link(RichText::new(&e.query).color(theme::accent()).strong()).on_hover_text("Search again").clicked() {
                         action = Some(Action::Search(Search { kind: e.kind, query: e.query.clone(), sources: e.sources }));
                     }
                     for (source, on) in Source::ALL.into_iter().zip(e.sources) {
@@ -646,7 +903,7 @@ impl App {
             });
             ui.add_space(8.0);
 
-            egui::Frame::group(ui.style()).corner_radius(8.0).inner_margin(10).show(ui, |ui| {
+            theme::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Your username").strong());
@@ -698,9 +955,16 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.receive();
         self.auto_refresh(&ctx);
+        if !self.account_checked {
+            self.account_checked = true;
+            if !self.github_token.is_empty() {
+                self.check_token(&ctx, self.github_token.clone(), false);
+            }
+        }
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(6.0);
+        let top_frame = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(14, 8));
+        egui::Panel::top("top").frame(top_frame).show(ui, |ui| {
+            ui.add_space(2.0);
             self.top_bar(ui);
             if self.view == View::Search && !self.tabs.is_empty() {
                 ui.separator();
@@ -728,11 +992,13 @@ impl eframe::App for App {
             });
         self.sidebar_open = open;
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        let central = egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(24, 18));
+        egui::CentralPanel::default().frame(central).show(ui, |ui| {
             let main_action = match self.view {
                 View::Search => self.search_view(ui),
                 View::Following => self.following_view(ui),
                 View::History => self.history_view(ui),
+                View::Accounts => self.accounts_view(ui),
             };
             action = action.take().or(main_action);
         });
@@ -756,7 +1022,7 @@ fn report_view(
 
     ui.horizontal_wrapped(|ui| {
         icons::source_badge(ui, source);
-        ui.heading(RichText::new(&report.title).strong());
+        ui.heading(&report.title);
         if !report.url.is_empty() && icons::button(ui, Some(Icon::External), "Open page", false, None).clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(&report.url));
         }
@@ -770,7 +1036,7 @@ fn report_view(
         }
     });
     if !report.subtitle.is_empty() {
-        ui.label(RichText::new(&report.subtitle).weak());
+        ui.label(RichText::new(&report.subtitle).color(theme::MUTED));
     }
     if let Some(note) = &report.note {
         ui.horizontal(|ui| {
@@ -778,58 +1044,57 @@ fn report_view(
             ui.label(RichText::new(note).small().color(icons::GOLD));
         });
     }
-    ui.add_space(8.0);
+    ui.add_space(16.0);
 
     metric_cards(ui, report, followed);
-    ui.add_space(10.0);
 
-    for (i, chart) in report.charts.iter().enumerate() {
-        if i > 0 {
-            ui.add_space(12.0);
-        }
+    for chart in &report.charts {
         match chart {
             Chart::Daily { title, points } => daily_chart(ui, title, points, true),
             Chart::Bars { title, bars } => bar_rows(ui, title, bars),
         }
+        ui.add_space(12.0);
     }
 
     if !report.items.is_empty() {
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("All items ({})", report.items.len())).strong());
-            ui.add(egui::TextEdit::singleline(filter).hint_text("filter…").desired_width(180.0));
-            icons::info(ui, "Click a name to see its stats, or the arrow next to it to open its page in your browser.");
-        });
-        ui.add_space(4.0);
-        let needle = filter.to_lowercase();
-        egui::Grid::new(("items", source.label())).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-            ui.label(RichText::new("Name").strong());
-            ui.label("");
-            for col in &report.columns {
-                ui.label(RichText::new(col).strong());
-            }
-            ui.label(RichText::new("Description").strong());
-            ui.end_row();
-
-            for item in report.items.iter().filter(|i| {
-                needle.is_empty()
-                    || i.name.to_lowercase().contains(&needle)
-                    || i.description.to_lowercase().contains(&needle)
-            }) {
-                if ui.link(RichText::new(&item.name).color(ACCENT)).on_hover_text("Show stats").clicked() {
-                    action = Some(Action::Search(drill_down(source, report, &item.name)));
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("All items ({})", report.items.len())).family(theme::semibold()).size(15.0));
+                ui.add(egui::TextEdit::singleline(filter).hint_text("filter…").desired_width(180.0));
+                icons::info(ui, "Click a name to see its stats, or the arrow next to it to open its page in your browser.");
+            });
+            ui.add_space(8.0);
+            let needle = filter.to_lowercase();
+            egui::Grid::new(("items", source.label())).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                ui.label(theme::caps_label("Name"));
+                ui.label("");
+                for col in &report.columns {
+                    ui.label(theme::caps_label(col));
                 }
-                if icons::icon_button(ui, Icon::External, &item.url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(&item.url));
-                }
-                for v in &item.values {
-                    ui.label(v);
-                }
-                let desc: String = item.description.chars().take(90).collect();
-                let more = item.description.chars().count() > 90;
-                ui.label(RichText::new(if more { format!("{desc}…") } else { desc }).weak());
+                ui.label(theme::caps_label("Description"));
                 ui.end_row();
-            }
+    
+                for item in report.items.iter().filter(|i| {
+                    needle.is_empty()
+                        || i.name.to_lowercase().contains(&needle)
+                        || i.description.to_lowercase().contains(&needle)
+                }) {
+                    if ui.link(RichText::new(&item.name).color(theme::accent())).on_hover_text("Show stats").clicked() {
+                        action = Some(Action::Search(drill_down(source, report, &item.name)));
+                    }
+                    if icons::icon_button(ui, Icon::External, &item.url).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(&item.url));
+                    }
+                    for v in &item.values {
+                        ui.label(v);
+                    }
+                    let desc: String = item.description.chars().take(90).collect();
+                    let more = item.description.chars().count() > 90;
+                    ui.label(RichText::new(if more { format!("{desc}…") } else { desc }).color(theme::MUTED));
+                    ui.end_row();
+                }
+            });
         });
     }
     action
@@ -838,13 +1103,13 @@ fn report_view(
 fn followed_card(ui: &mut egui::Ui, f: &Followed, metric: Option<String>, busy: bool) -> Option<Action> {
     let mut action = None;
     let key = f.key();
-    egui::Frame::group(ui.style()).corner_radius(8.0).inner_margin(10).show(ui, |ui| {
+    theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             icons::source_badge(ui, f.source);
             let kind_icon = if f.kind == Kind::User { Icon::User } else { Icon::Package };
             icons::inline(ui, kind_icon, ui.visuals().weak_text_color());
-            if ui.link(RichText::new(&f.title).strong().size(15.0).color(ACCENT)).on_hover_text("Show full stats").clicked()
+            if ui.link(RichText::new(&f.title).strong().size(15.0).color(theme::accent())).on_hover_text("Show full stats").clicked()
             {
                 let mut sources = [false; 4];
                 sources[Source::ALL.iter().position(|&s| s == f.source).unwrap_or(0)] = true;
@@ -990,125 +1255,220 @@ fn welcome(ui: &mut egui::Ui) {
     });
 }
 
+/// Equal-width metric tiles, up to four per row.
 fn metric_cards(ui: &mut egui::Ui, report: &Report, followed: Option<&Followed>) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-        for m in &report.metrics {
-            egui::Frame::group(ui.style())
-                .corner_radius(8.0)
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.set_min_width(120.0);
+    const GAP: f32 = 12.0;
+    let avail = ui.available_width();
+    let cols = (((avail + GAP) / (210.0 + GAP)).floor() as usize).clamp(1, 4);
+    let tile_w = (avail - GAP * (cols as f32 - 1.0)) / cols as f32;
+    // Frame inner margin (20 each side) + 1px border.
+    let content_w = tile_w - 42.0;
+
+    for row in report.metrics.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for m in row {
+                theme::card().show(ui, |ui| {
+                    ui.set_width(content_w);
+                    ui.set_height(74.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(&m.label).small().weak());
+                        ui.label(theme::caps_label(&m.label));
+                        ui.add_space(8.0);
                         let value = if m.value.is_empty() { "—" } else { m.value.as_str() };
-                        ui.label(RichText::new(value).size(18.0).strong());
+                        ui.add(egui::Label::new(theme::big_number(value)).truncate());
                         if let Some(change) = followed.and_then(|f| f.change(&m.label, 1)) {
                             ui.horizontal(|ui| {
                                 delta_label(ui, Some(change));
-                                ui.label(RichText::new("vs yesterday").small().weak());
+                                ui.label(RichText::new("vs yesterday").small().color(theme::MUTED));
                             });
                         }
                     });
                 });
-        }
-    });
+            }
+        });
+        ui.add_space(GAP);
+    }
 }
 
+/// Monotone cubic (Fritsch–Carlson) interpolation: a smooth curve through every
+/// point that never overshoots, so counts can't dip below zero between days.
+fn smooth(pts: &[[f64; 2]], steps: usize) -> Vec<[f64; 2]> {
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let d: Vec<f64> = (0..n - 1).map(|i| (pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0])).collect();
+    let mut m = vec![0.0; n];
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for i in 1..n - 1 {
+        m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
+    }
+    for i in 0..n - 1 {
+        if d[i] == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+            continue;
+        }
+        let (a, b) = (m[i] / d[i], m[i + 1] / d[i]);
+        let h = a * a + b * b;
+        if h > 9.0 {
+            let t = 3.0 / h.sqrt();
+            m[i] = t * a * d[i];
+            m[i + 1] = t * b * d[i];
+        }
+    }
+
+    let mut out = Vec::with_capacity((n - 1) * steps + 1);
+    for i in 0..n - 1 {
+        let ([x0, y0], [x1, y1]) = (pts[i], pts[i + 1]);
+        let h = x1 - x0;
+        for k in 0..steps {
+            let t = k as f64 / steps as f64;
+            let (t2, t3) = (t * t, t * t * t);
+            let y = (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+                + (t3 - 2.0 * t2 + t) * h * m[i]
+                + (-2.0 * t3 + 3.0 * t2) * y1
+                + (t3 - t2) * h * m[i + 1];
+            out.push([x0 + t * h, y]);
+        }
+    }
+    out.push(pts[n - 1]);
+    out
+}
+
+/// Smooth line chart in a card. With `with_average`, the curve is the 7-day
+/// average (daily downloads zig-zag between weekdays and weekends) and the raw
+/// daily values are drawn faintly behind it.
 fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], with_average: bool) {
     if points.is_empty() {
         return;
     }
-    ui.label(RichText::new(title).strong());
-
     let daily: Vec<[f64; 2]> = points.iter().enumerate().map(|(i, p)| [i as f64, p.1]).collect();
-    // A 7-day rolling average smooths out the weekday/weekend saw-tooth.
     let avg: Vec<[f64; 2]> = (0..points.len())
         .map(|i| {
-            let lo = i.saturating_sub(6);
-            let window = &points[lo..=i];
+            let window = &points[i.saturating_sub(6)..=i];
             [i as f64, window.iter().map(|p| p.1).sum::<f64>() / window.len() as f64]
         })
         .collect();
+    let steps = (800 / points.len()).clamp(2, 16);
+    let main_curve = smooth(if with_average { &avg } else { &daily }, steps);
 
     let dates: Vec<String> = points.iter().map(|p| p.0.clone()).collect();
     let dates_axis = dates.clone();
+    let (raw, averaged) = (daily.clone(), avg.clone());
 
-    Plot::new(("daily", title))
-        .height(if with_average { 260.0 } else { 180.0 })
-        .allow_scroll(false)
-        .include_y(0.0)
-        .legend(egui_plot::Legend::default())
-        .x_axis_formatter(move |mark, _| {
-            let i = mark.value.round();
-            if i < 0.0 || (mark.value - i).abs() > 1e-6 {
-                return String::new();
-            }
-            dates_axis.get(i as usize).cloned().unwrap_or_default()
-        })
-        .y_axis_formatter(|mark, _| api::fmt_compact(mark.value))
-        .label_formatter(move |pos| {
-            let p = match pos {
-                egui_plot::HoverPosition::NearDataPoint { position, .. } => *position,
-                egui_plot::HoverPosition::Elsewhere { position } => *position,
-            };
-            let i = p.x.round();
-            if i < 0.0 {
-                return None;
-            }
-            let date = dates.get(i as usize)?;
-            Some(format!("{date}\n{}", api::fmt_num(p.y)))
-        })
-        .show(ui, |plot| {
+    let body = |ui: &mut egui::Ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::TEXT));
             if with_average {
-                plot.line(Line::new("daily", PlotPoints::new(daily)).color(ACCENT.gamma_multiply(0.5)));
-                plot.line(Line::new("7-day average", PlotPoints::new(avg)).color(ACCENT).width(2.0));
-            } else {
-                plot.line(Line::new(title, PlotPoints::new(daily)).color(ACCENT).width(2.0));
+                ui.label(RichText::new("7-day average").small().color(theme::MUTED));
             }
         });
+        ui.add_space(10.0);
+
+        Plot::new(("daily", title))
+            .height(if with_average { 260.0 } else { 190.0 })
+            .show_background(false)
+            .grid_color(theme::GRID)
+            .cursor_color(theme::MUTED.gamma_multiply(0.5))
+            .allow_drag(false)
+            .allow_zoom(false)
+            .allow_scroll(false)
+            .allow_boxed_zoom(false)
+            .include_y(0.0)
+            .y_axis_min_width(44.0)
+            .x_axis_formatter(move |mark, _| {
+                let i = mark.value.round();
+                if i < 0.0 || (mark.value - i).abs() > 1e-6 {
+                    return String::new();
+                }
+                // "09-20" like the dashboard; full dates show in the hover label.
+                dates_axis.get(i as usize).map(|d| d.get(5..).unwrap_or(d).to_string()).unwrap_or_default()
+            })
+            .y_axis_formatter(|mark, _| api::fmt_compact(mark.value))
+            .label_formatter(move |pos| {
+                let x = match pos {
+                    egui_plot::HoverPosition::NearDataPoint { position, .. } => position.x,
+                    egui_plot::HoverPosition::Elsewhere { position } => position.x,
+                };
+                // The curve is interpolated, so report the real values for the nearest day.
+                let i = x.round();
+                if i < 0.0 {
+                    return None;
+                }
+                let i = i as usize;
+                let date = dates.get(i)?;
+                let day = api::fmt_num(raw.get(i)?[1]);
+                Some(if with_average {
+                    format!("{date}\n{day}  (7-day avg {})", api::fmt_num(averaged.get(i)?[1]))
+                } else {
+                    format!("{date}\n{day}")
+                })
+            })
+            .show(ui, |plot| {
+                if with_average {
+                    plot.line(
+                        Line::new("daily", PlotPoints::new(daily))
+                            .color(theme::accent().gamma_multiply(0.22))
+                            .width(1.0),
+                    );
+                }
+                plot.line(
+                    Line::new(title, PlotPoints::new(main_curve))
+                        .color(theme::accent())
+                        .width(2.2)
+                        .fill(0.0)
+                        .fill_alpha(0.10),
+                );
+            });
+    };
+    // Report charts get their own card; the small history chart sits inside a Following card already.
+    if with_average {
+        theme::card().show(ui, body);
+        ui.add_space(12.0);
+    } else {
+        body(ui);
+    }
 }
 
-/// Horizontal bar list, painted directly so long labels stay readable.
+/// Horizontal bar list in a card, painted directly so long labels stay readable.
 fn bar_rows(ui: &mut egui::Ui, title: &str, bars: &[(String, f64)]) {
     if bars.is_empty() {
         return;
     }
-    ui.label(RichText::new(title).strong());
-    ui.add_space(4.0);
     let max = bars.iter().map(|b| b.1).fold(0.0_f64, f64::max).max(1.0);
     let is_percent = title.contains('%');
-    let label_w = 180.0;
-    let value_w = 90.0;
+    let (label_w, value_w) = (180.0, 90.0);
 
-    for (label, value) in bars {
-        let width = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 22.0), egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        let text_color = ui.visuals().text_color();
-        let font = egui::FontId::proportional(13.0);
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        theme::card_title(ui, title);
+        for (label, value) in bars {
+            let width = ui.available_width();
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            let font = egui::FontId::proportional(13.0);
 
-        let short: String = label.chars().take(26).collect();
-        painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, short, font.clone(), text_color);
+            let short: String = label.chars().take(26).collect();
+            painter.text(rect.left_center(), egui::Align2::LEFT_CENTER, short, font.clone(), theme::TEXT);
 
-        let bar_space = (width - label_w - value_w).max(20.0);
-        let bar_w = (value / max) as f32 * bar_space;
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + label_w, rect.top() + 4.0),
-            egui::vec2(bar_w.max(2.0), rect.height() - 8.0),
-        );
-        painter.rect_filled(bar, 3.0, ACCENT.gamma_multiply(if resp.hovered() { 1.0 } else { 0.75 }));
+            // Faint full-width track, then the value bar on top.
+            let track = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + label_w, rect.top() + 7.0),
+                egui::vec2((width - label_w - value_w).max(20.0), rect.height() - 14.0),
+            );
+            painter.rect_filled(track, 5.0, theme::GRID.gamma_multiply(0.6));
+            let bar = egui::Rect::from_min_size(track.min, egui::vec2((track.width() * (value / max) as f32).max(4.0), track.height()));
+            painter.rect_filled(bar, 5.0, theme::accent().gamma_multiply(if resp.hovered() { 1.0 } else { 0.8 }));
 
-        let text = if is_percent { format!("{value:.1}%") } else { api::fmt_compact(*value) };
-        painter.text(
-            egui::pos2(bar.right() + 6.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            font,
-            ui.visuals().weak_text_color(),
-        );
-        resp.on_hover_text(format!("{label}: {}", if is_percent { format!("{value:.2}%") } else { api::fmt_num(*value) }));
-    }
+            let text = if is_percent { format!("{value:.1}%") } else { api::fmt_compact(*value) };
+            painter.text(egui::pos2(track.right() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, theme::MUTED);
+            resp.on_hover_text(format!("{label}: {}", if is_percent { format!("{value:.2}%") } else { api::fmt_num(*value) }));
+        }
+    });
+    ui.add_space(12.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,4 +1497,20 @@ fn install_task() -> Result<(), String> {
     // Hourly, so a missed day (PC off at a fixed time) is caught up; the
     // snapshot command skips anything that already has today's numbers.
     schtasks(&["/Create", "/F", "/SC", "HOURLY", "/TN", TASK_NAME, "/TR", &run])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::smooth;
+
+    #[test]
+    fn smooth_curve_hits_every_point_without_overshooting() {
+        let pts = [[0.0, 0.0], [1.0, 140.0], [2.0, 20.0], [3.0, 20.0], [4.0, 50.0]];
+        let curve = smooth(&pts, 8);
+        for p in pts {
+            assert!(curve.iter().any(|c| (c[0] - p[0]).abs() < 1e-9 && (c[1] - p[1]).abs() < 1e-9));
+        }
+        assert!(curve.iter().all(|c| (0.0..=140.0).contains(&c[1])), "overshoot");
+        assert!(curve.windows(2).all(|w| w[1][0] > w[0][0]));
+    }
 }

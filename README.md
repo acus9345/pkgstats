@@ -43,7 +43,9 @@ The menu button (top left) opens a sidebar with Search, Following, History and S
 cargo run --release
 ```
 
-GitHub allows 60 unauthenticated requests per hour. To raise that limit, set `GITHUB_TOKEN` before launching, or paste a token in ⚙ Settings. The token is kept in memory only.
+Without a token, GitHub allows 60 requests per hour and 10 searches per minute. Open **menu → Add token** and paste a GitHub token to raise that to 5,000 per hour and 30 searches per minute. The token needs no scopes, and the page links to GitHub's token form. It's stored in Windows Credential Manager. If no token is added, the `GITHUB_TOKEN` environment variable is used. npm, PyPI and crates.io need no token.
+
+**Settings → App style** changes the accent colour: Blue, Soft yellow, Peach, Rose, Lavender, Sky, Mint, Silver, or a custom colour. The choice is saved to `%APPDATA%\PkgStats\settings.json`.
 
 ## Tests
 
