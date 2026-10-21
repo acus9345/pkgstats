@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+const NOT_FOUND: &str = "Not found (404)";
 const RATE_LIMITED: &str = "Rate limited (429). Try again in a minute.";
 const USER_AGENT: &str = "pkgstats-desktop/0.1 (https://github.com/; stats viewer)";
 
@@ -77,6 +78,8 @@ pub struct Report {
     pub items: Vec<Item>,
     /// Shown under the header, e.g. "only the first 30 packages were checked".
     pub note: Option<String>,
+    /// Search results rather than one exact user/package (no Follow button).
+    pub is_search: bool,
 }
 
 impl Report {
@@ -165,7 +168,7 @@ impl Http {
         };
         match result {
             Ok(resp) => resp.into_json::<Value>().map_err(|e| format!("Bad JSON from {url}: {e}")),
-            Err(ureq::Error::Status(404, _)) => Err("Not found (404)".into()),
+            Err(ureq::Error::Status(404, _)) => Err(NOT_FOUND.into()),
             Err(ureq::Error::Status(403 | 429, resp)) if url.contains("api.github.com") => {
                 let reset = resp.header("x-ratelimit-reset").unwrap_or("?").to_owned();
                 Err(format!(
@@ -321,6 +324,7 @@ fn github_user(http: &Http, user: &str) -> FetchResult {
     }
 
     Ok(Report {
+        is_search: false,
         title: if name.is_empty() { login.clone() } else { format!("{name} (@{login})") },
         subtitle,
         url: s(&u, "html_url"),
@@ -344,11 +348,14 @@ fn github_repo(http: &Http, query: &str) -> FetchResult {
         .trim_start_matches("https://github.com/")
         .trim_end_matches('/')
         .trim_end_matches(".git");
-    let (owner, repo) = full
-        .split_once('/')
-        .ok_or("For a GitHub repository, search for owner/repo (e.g. rust-lang/rust).")?;
+    let Some((owner, repo)) = full.split_once('/') else {
+        return github_search(http, full);
+    };
     let base = format!("https://api.github.com/repos/{}/{}", enc(owner), enc(repo));
-    let r = http.get_json(&base)?;
+    let r = match http.get_json(&base) {
+        Err(e) if e == NOT_FOUND => return github_search(http, full),
+        other => other?,
+    };
 
     let languages = http.get_json(&format!("{base}/languages")).unwrap_or(Value::Null);
     let mut bars: Vec<(String, f64)> = languages
@@ -394,8 +401,102 @@ fn github_repo(http: &Http, query: &str) -> FetchResult {
     })
 }
 
+fn github_search(http: &Http, query: &str) -> FetchResult {
+    // "owner/name" typos search better as plain words.
+    let words = query.replace('/', " ");
+    let res = http.get_json(&format!(
+        "https://api.github.com/search/repositories?q={}&per_page=30",
+        enc(words.trim())
+    ))?;
+    let items: Vec<Item> = res["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| Item {
+            name: s(r, "full_name"),
+            description: s(r, "description"),
+            url: s(r, "html_url"),
+            values: vec![
+                fmt_num(n(r, "stargazers_count")),
+                fmt_num(n(r, "forks_count")),
+                s(r, "language"),
+                date_only(&s(r, "pushed_at")),
+            ],
+            sort_key: n(r, "stargazers_count"),
+        })
+        .collect();
+    search_report(
+        query,
+        "GitHub",
+        format!("https://github.com/search?q={}&type=repositories", enc(words.trim())),
+        n(&res, "total_count"),
+        vec!["Stars".into(), "Forks".into(), "Language".into(), "Last push".into()],
+        items,
+    )
+}
+
+/// Report for a list of search results, kept in the registry's relevance order.
+fn search_report(
+    query: &str,
+    site: &str,
+    url: String,
+    total: f64,
+    columns: Vec<String>,
+    items: Vec<Item>,
+) -> FetchResult {
+    if items.is_empty() {
+        return Err(format!("Nothing on {site} matches \"{query}\"."));
+    }
+    Ok(Report {
+        title: format!("Results for \"{query}\""),
+        subtitle: format!("No exact match on {site}. Showing its search results."),
+        url,
+        metrics: vec![metric("Matches", fmt_num(total)), metric("Shown", fmt_num(items.len() as f64))],
+        columns,
+        items,
+        is_search: true,
+        ..Default::default()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // npm
+
+fn npm_search(http: &Http, query: &str) -> FetchResult {
+    let res = http.get_json(&format!(
+        "https://registry.npmjs.org/-/v1/search?text={}&size=25",
+        enc(query.trim())
+    ))?;
+    let objects = res["objects"].as_array().cloned().unwrap_or_default();
+    let names: Vec<String> = objects.iter().map(|o| s(&o["package"], "name")).collect();
+    let daily = npm_daily_downloads(http, &names);
+    let items: Vec<Item> = objects
+        .iter()
+        .map(|o| {
+            let p = &o["package"];
+            let name = s(p, "name");
+            // Real counts when the downloads API answered, else search's cached ones.
+            let weekly = daily
+                .get(&name)
+                .map_or(n(&o["downloads"], "weekly"), |d| d.iter().rev().take(7).map(|x| x.1).sum());
+            Item {
+                description: s(p, "description"),
+                url: format!("https://www.npmjs.com/package/{name}"),
+                values: vec![fmt_num(weekly), s(p, "version"), date_only(&s(p, "date"))],
+                sort_key: weekly,
+                name,
+            }
+        })
+        .collect();
+    search_report(
+        query,
+        "npm",
+        format!("https://www.npmjs.com/search?q={}", enc(query.trim())),
+        n(&res, "total"),
+        vec!["Weekly".into(), "Version".into(), "Published".into()],
+        items,
+    )
+}
 
 fn npm_user(http: &Http, user: &str) -> FetchResult {
     let user = user.trim_start_matches('~').to_lowercase();
@@ -496,6 +597,7 @@ fn npm_user(http: &Http, user: &str) -> FetchResult {
     charts.extend(top_bars(&items, "Top packages by monthly downloads"));
 
     Ok(Report {
+        is_search: false,
         title: format!("~{user} on npm"),
         subtitle: "Packages maintained by this user".into(),
         url: format!("https://www.npmjs.com/~{user}"),
@@ -582,7 +684,10 @@ fn npm_daily_downloads(http: &Http, names: &[String]) -> BTreeMap<String, Vec<(S
 fn npm_package(http: &Http, pkg: &str) -> FetchResult {
     // Scoped names (@scope/name) keep their slash on the registry and the downloads API.
     let path = pkg.replace(' ', "").to_lowercase();
-    let latest = http.get_json(&format!("https://registry.npmjs.org/{path}/latest"))?;
+    let latest = match http.get_json(&format!("https://registry.npmjs.org/{path}/latest")) {
+        Err(e) if e == NOT_FOUND => return npm_search(http, pkg),
+        other => other?,
+    };
 
     let (points, totals, note) = match http.get_json(&format!("https://api.npmjs.org/downloads/range/last-year/{path}")) {
         Ok(range) => {
@@ -712,6 +817,7 @@ fn pypi_user(http: &Http, user: &str) -> FetchResult {
     let weekly: f64 = weekly_total;
 
     Ok(Report {
+        is_search: false,
         title: format!("{user} on PyPI"),
         subtitle: "Packages this user owns or maintains".into(),
         url: format!("https://pypi.org/user/{user}/"),
@@ -730,7 +836,12 @@ fn pypi_user(http: &Http, user: &str) -> FetchResult {
 }
 
 fn pypi_package(http: &Http, pkg: &str) -> FetchResult {
-    let meta = http.get_json(&format!("https://pypi.org/pypi/{}/json", enc(pkg)))?;
+    let meta = match http.get_json(&format!("https://pypi.org/pypi/{}/json", enc(pkg))) {
+        Err(e) if e == NOT_FOUND => {
+            return Err(format!("No PyPI package named \"{pkg}\". PyPI has no search API, so check the exact name."));
+        }
+        other => other?,
+    };
     let info = &meta["info"];
     let norm = pep503(&s(info, "name"));
 
@@ -842,6 +953,7 @@ fn crates_user(http: &Http, user: &str) -> FetchResult {
     let name = s(u, "name");
 
     Ok(Report {
+        is_search: false,
         title: if name.is_empty() { s(u, "login") } else { format!("{name} ({})", s(u, "login")) },
         subtitle: "Crates owned by this user".into(),
         url: format!("https://crates.io/users/{}", s(u, "login")),
@@ -858,8 +970,59 @@ fn crates_user(http: &Http, user: &str) -> FetchResult {
     })
 }
 
+fn crates_search(http: &Http, query: &str) -> FetchResult {
+    // Sorted by downloads, then names resembling the query are moved up, so a
+    // typo like "serd" lists serde before popular crates that merely mention it.
+    let res = http.get_json(&format!(
+        "https://crates.io/api/v1/crates?q={}&per_page=25&sort=downloads",
+        enc(query.trim())
+    ))?;
+    let norm = |x: &str| x.trim().to_lowercase().replace('-', "_");
+    let q = norm(query);
+    let mut items: Vec<Item> = res["crates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| Item {
+            name: s(c, "name"),
+            description: s(c, "description").trim().to_string(),
+            url: format!("https://crates.io/crates/{}", s(c, "name")),
+            values: vec![
+                fmt_num(n(c, "downloads")),
+                fmt_num(n(c, "recent_downloads")),
+                {
+                    let v = s(c, "default_version");
+                    if v.is_empty() { s(c, "max_version") } else { v }
+                },
+            ],
+            sort_key: n(c, "downloads"),
+        })
+        .collect();
+    items.sort_by_key(|i| {
+        let name = norm(&i.name);
+        if name.starts_with(&q) {
+            0
+        } else if name.contains(&q) {
+            1
+        } else {
+            2
+        }
+    });
+    search_report(
+        query,
+        "crates.io",
+        format!("https://crates.io/search?q={}", enc(query.trim())),
+        n(&res["meta"], "total"),
+        vec!["All-time".into(), "Last 90 days".into(), "Version".into()],
+        items,
+    )
+}
+
 fn crates_package(http: &Http, name: &str) -> FetchResult {
-    let res = http.get_json(&format!("https://crates.io/api/v1/crates/{}", enc(name)))?;
+    let res = match http.get_json(&format!("https://crates.io/api/v1/crates/{}", enc(name))) {
+        Err(e) if e == NOT_FOUND => return crates_search(http, name),
+        other => other?,
+    };
     let c = &res["crate"];
     let dl = http.get_json(&format!("https://crates.io/api/v1/crates/{}/downloads", enc(name)))?;
 
@@ -920,6 +1083,9 @@ mod tests {
             (Source::PyPI, Kind::Package, "requests"),
             (Source::Crates, Kind::User, "dtolnay"),
             (Source::Crates, Kind::Package, "serde"),
+            (Source::GitHub, Kind::Package, "tokio"),
+            (Source::Npm, Kind::Package, "reactt-dom-zzz"),
+            (Source::Crates, Kind::Package, "serd"),
         ];
         for (source, kind, q) in cases {
             let r = fetch(source, kind, q, token.as_deref()).unwrap_or_else(|e| panic!("{source:?} {kind:?} {q}: {e}"));
@@ -933,7 +1099,13 @@ mod tests {
                 .collect();
             let chart = chart.join("+");
             let m: Vec<String> = r.metrics.iter().take(3).map(|m| format!("{}={}", m.label, m.value)).collect();
-            println!("{source:?}/{kind:?} {q}: {} | {} | chart {chart} | items {}", r.title, m.join(", "), r.items.len());
+            let top: Vec<&str> = r.items.iter().take(3).map(|i| i.name.as_str()).collect();
+            println!(
+                "{source:?}/{kind:?} {q}: {} | {} | chart {chart} | items {} {top:?}",
+                r.title,
+                m.join(", "),
+                r.items.len()
+            );
         }
     }
 

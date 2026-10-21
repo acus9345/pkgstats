@@ -22,6 +22,8 @@ A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows d
 | PyPI      | last day/week/month downloads, ~180-day daily chart, releases, Python requirement |
 | crates.io | all-time and 90-day downloads, daily chart for 90 days, version count |
 
+If there's no exact match (a typo, or a GitHub name without `owner/`), GitHub, npm and crates.io show their search results instead. Click a result to open its stats. PyPI has no search API, so it needs the exact name.
+
 In a user report, click a package or repo name to see its stats, or click the arrow icon next to it to open its page in your browser. **Open page** in a report's header opens that user's or package's page. The back arrow returns to the previous report.
 
 ## Menu and history

@@ -760,11 +760,13 @@ fn report_view(
         if !report.url.is_empty() && icons::button(ui, Some(Icon::External), "Open page", false, None).clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(&report.url));
         }
-        let (icon, text) = if followed.is_some() { (Icon::StarFilled, "Following") } else { (Icon::Star, "Follow") };
-        let resp = icons::button(ui, Some(icon), text, followed.is_some(), Some(icons::GOLD))
-            .on_hover_text("Save a snapshot every day to track changes");
-        if resp.clicked() {
-            action = Some(Action::ToggleFollow(source));
+        if !report.is_search {
+            let (icon, text) = if followed.is_some() { (Icon::StarFilled, "Following") } else { (Icon::Star, "Follow") };
+            let resp = icons::button(ui, Some(icon), text, followed.is_some(), Some(icons::GOLD))
+                .on_hover_text("Save a snapshot every day to track changes");
+            if resp.clicked() {
+                action = Some(Action::ToggleFollow(source));
+            }
         }
     });
     if !report.subtitle.is_empty() {
@@ -952,6 +954,8 @@ fn drill_down(source: Source, report: &Report, item: &str) -> Search {
     sources[Source::ALL.iter().position(|&s| s == source).unwrap_or(0)] = true;
     // GitHub repos need owner/repo; the owner is the login in the report URL.
     let query = match source {
+        // Search results already carry the full owner/repo.
+        Source::GitHub if item.contains('/') => item.to_string(),
         Source::GitHub => {
             let owner = report.url.trim_end_matches('/').rsplit('/').next().unwrap_or_default();
             format!("{owner}/{item}")
