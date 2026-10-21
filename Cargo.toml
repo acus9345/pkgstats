@@ -2,6 +2,14 @@
 name = "pkgstats"
 version = "0.1.0"
 edition = "2024"
+description = "Desktop app for GitHub, npm, PyPI and crates.io stats: users, packages, download charts and daily tracking"
+license = "MIT"
+repository = "https://github.com/acus9345/pkgstats"
+homepage = "https://github.com/acus9345/pkgstats"
+readme = "README.md"
+keywords = ["github", "npm", "pypi", "crates", "downloads"]
+categories = ["gui", "development-tools"]
+exclude = ["/target", "/.github"]
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

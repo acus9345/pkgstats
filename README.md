@@ -2,9 +2,14 @@
 
 A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows developer and package stats from **GitHub**, **npm**, **PyPI** and **crates.io**.
 
+## Install
+
+- **Windows**: download `pkgstats-windows-x64.exe` from the [latest release](https://github.com/acus9345/pkgstats/releases/latest) and run it.
+- **With Rust**: `cargo install pkgstats`, then run `pkgstats`.
+
 ## Modes
 
-**👤 User**: enter a username to look it up on each selected registry at once:
+**User**: enter a username to look it up on each selected registry at once:
 
 | Source    | What you get |
 |-----------|--------------|
@@ -13,7 +18,7 @@ A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows d
 | PyPI      | owned/maintained packages with weekly/monthly downloads (first 40, via pypistats.org) |
 | crates.io | crate count, all-time and 90-day downloads, top crates |
 
-**📦 Package / repo**: enter a package name (`react`, `requests`, `serde`) or `owner/repo` for GitHub:
+**Package / repo**: enter a package name (`react`, `requests`, `serde`) or `owner/repo` for GitHub:
 
 | Source    | What you get |
 |-----------|--------------|
@@ -41,7 +46,7 @@ The menu button (top left) opens a sidebar with Search, Following, History and S
 - Snapshots are taken when the app opens and every 30 minutes while it runs. To keep recording while it's closed, use **Settings → Enable background task**. This adds an hourly Windows Task Scheduler job that runs `pkgstats --snapshot` and only fetches once a day.
 - Data is stored in `%APPDATA%\PkgStats\following.json`.
 
-## Run
+## Build from source
 
 ```bash
 cargo run --release

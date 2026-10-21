@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 const NOT_FOUND: &str = "Not found (404)";
 const RATE_LIMITED: &str = "Rate limited (429). Try again in a minute.";
-const USER_AGENT: &str = "pkgstats-desktop/0.1 (https://github.com/; stats viewer)";
+const USER_AGENT: &str = concat!("pkgstats/", env!("CARGO_PKG_VERSION"), " (https://github.com/acus9345/pkgstats)");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Source {
