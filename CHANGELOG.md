@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Stat cards are a fixed grid of equal tiles. Followed items show a change badge ("▲ +2", "No change") and a small trend line from their daily snapshots.
+- Long repo descriptions in the items table are cut at the card's edge (full text on hover) instead of widening the page.
+
 ## 0.1.5
 
 - The shaded area under download charts stays in place when the top of the curve is scrolled out of view.

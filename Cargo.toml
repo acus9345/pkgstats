@@ -1,6 +1,6 @@
 [package]
 name = "pkgstats"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Desktop app for GitHub, npm, PyPI and crates.io stats: users, packages, download charts and daily tracking"
 license = "MIT"

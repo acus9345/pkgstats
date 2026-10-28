@@ -1196,6 +1196,7 @@ fn report_view(
             });
             ui.add_space(8.0);
             let needle = filter.to_lowercase();
+            let card_right = ui.max_rect().right();
             egui::Grid::new(("items", source.label())).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
                 ui.label(theme::caps_label("Name"));
                 ui.label("");
@@ -1219,9 +1220,12 @@ fn report_view(
                     for v in &item.values {
                         ui.label(v);
                     }
-                    let desc: String = item.description.chars().take(90).collect();
-                    let more = item.description.chars().count() > 90;
-                    ui.label(RichText::new(if more { format!("{desc}…") } else { desc }).color(theme::muted()));
+                    // Fill to the card's edge and cut there (full text on hover), so a long
+                    // description neither widens the page nor stops at the header's width.
+                    let width = (card_right - ui.cursor().min.x).max(120.0);
+                    ui.allocate_ui(egui::vec2(width, 20.0), |ui| {
+                        ui.add(egui::Label::new(RichText::new(&item.description).color(theme::muted())).truncate());
+                    });
                     ui.end_row();
                 }
             });
@@ -1391,32 +1395,99 @@ fn metric_cards(ui: &mut egui::Ui, report: &Report, followed: Option<&Followed>)
     let avail = ui.available_width();
     let cols = (((avail + GAP) / (210.0 + GAP)).floor() as usize).clamp(1, 4);
     let tile_w = (avail - GAP * (cols as f32 - 1.0)) / cols as f32;
-    // Frame inner margin (20 each side) + 1px border.
-    let content_w = tile_w - 42.0;
 
-    for row in report.metrics.chunks(cols) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = GAP;
-            for m in row {
-                theme::card().show(ui, |ui| {
-                    ui.set_width(content_w);
-                    ui.set_height(74.0);
-                    ui.vertical(|ui| {
-                        ui.label(theme::caps_label(&m.label));
-                        ui.add_space(8.0);
-                        let value = if m.value.is_empty() { "—" } else { m.value.as_str() };
-                        ui.add(egui::Label::new(theme::big_number(value)).truncate());
-                        if let Some(change) = followed.and_then(|f| f.change(&m.label, 1)) {
-                            ui.horizontal(|ui| {
-                                delta_label(ui, Some(change));
-                                ui.label(RichText::new("vs yesterday").small().color(theme::muted()));
-                            });
-                        }
-                    });
-                });
+    const PAD: f32 = 18.0;
+    // Every tile in the report gets the same height: room for the change line
+    // when any metric has one, so tiles with and without it still line up.
+    let change = |m: &api::Metric| followed.and_then(|f| f.change(&m.label, 1));
+    let has_footer = report.metrics.iter().any(|m| change(m).is_some());
+    let tile_h = if has_footer { 118.0 } else { 92.0 };
+    let p = theme::palette();
+
+    for (r, row) in report.metrics.chunks(cols).enumerate() {
+        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(avail, tile_h), egui::Sense::hover());
+        for (c, m) in row.iter().enumerate() {
+            let rect = egui::Rect::from_min_size(
+                row_rect.min + egui::vec2(c as f32 * (tile_w + GAP), 0.0),
+                egui::vec2(tile_w, tile_h),
+            );
+            let hovered = ui.interact(rect, ui.scope_id().with(("metric", r, c)), egui::Sense::hover()).hovered();
+            let border = if hovered { p.border_strong } else { p.border };
+            ui.painter().rect(rect, 14.0, p.card, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
+
+            // Small trend line on the right once there are a few days of snapshots.
+            let series = followed.map(|f| f.series(&m.label)).unwrap_or_default();
+            let spark_w = if series.len() >= 2 { (tile_w * 0.32).min(96.0) } else { 0.0 };
+            if spark_w > 0.0 {
+                let spark = egui::Rect::from_min_size(
+                    egui::pos2(rect.right() - PAD - spark_w, rect.top() + PAD + 26.0),
+                    egui::vec2(spark_w, 30.0),
+                );
+                sparkline(ui.painter(), spark, &series);
             }
-        });
+
+            let inner = rect.shrink(PAD);
+            // A detached child, so the tile's text doesn't move the page's cursor (the row rect already did).
+            let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+            {
+                let ui = &mut tile;
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.add(egui::Label::new(theme::caps_label(&m.label)).truncate());
+                let value = if m.value.is_empty() { "—" } else { m.value.as_str() };
+                let value_w = inner.width() - if spark_w > 0.0 { spark_w + 10.0 } else { 0.0 };
+                ui.allocate_ui(egui::vec2(value_w, 34.0), |ui| {
+                    ui.add(egui::Label::new(theme::big_number(value)).truncate());
+                });
+                if let Some(d) = change(m) {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        delta_pill(ui, d);
+                        ui.label(RichText::new("vs yesterday").small().color(theme::muted()));
+                    });
+                }
+            }
+        }
         ui.add_space(GAP);
+    }
+}
+
+/// "▲ +2" in green, "▼ −3" in red, on a faint pill of the same colour; "No change" when flat.
+fn delta_pill(ui: &mut egui::Ui, d: f64) {
+    if d.abs() < 0.5 {
+        ui.label(RichText::new("No change").small().color(theme::muted()));
+        return;
+    }
+    let (icon, color, sign) = if d > 0.0 { (Icon::Up, icons::GREEN, "+") } else { (Icon::Down, icons::RED, "") };
+    let text = format!("{sign}{}", api::fmt_num(d));
+    let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(12.0), color);
+    let size = egui::vec2(8.0 + 10.0 + 4.0 + galley.size().x + 8.0, 20.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10.0, color.gamma_multiply(0.14));
+    let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(9.0, 9.0));
+    icons::paint(painter, icon_rect, icon, color);
+    painter.galley(egui::pos2(icon_rect.right() + 4.0, rect.center().y - galley.size().y / 2.0), galley, color);
+}
+
+/// Tiny line chart of a metric's daily snapshots, scaled to its own min and max.
+fn sparkline(painter: &egui::Painter, rect: egui::Rect, series: &[(String, f64)]) {
+    let (lo, hi) = series.iter().fold((f64::MAX, f64::MIN), |(lo, hi), (_, v)| (lo.min(*v), hi.max(*v)));
+    let flat = hi - lo < 0.5;
+    let span = if flat { 1.0 } else { hi - lo };
+    let last = (series.len() - 1).max(1) as f32;
+    let pts: Vec<egui::Pos2> = series
+        .iter()
+        .enumerate()
+        .map(|(i, (_, v))| {
+            // A flat series sits in the middle instead of on the floor.
+            let t = if flat { 0.5 } else { ((v - lo) / span) as f32 };
+            egui::pos2(rect.left() + rect.width() * i as f32 / last, rect.bottom() - rect.height() * t)
+        })
+        .collect();
+    painter.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.6, theme::accent())));
+    if let Some(end) = pts.last() {
+        painter.circle_filled(*end, 2.6, theme::accent());
     }
 }
 
