@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- New README screenshot. No code changes.
+
 ## 0.1.6
 
 - Stat cards are a fixed grid of equal tiles. Followed items show a change badge ("▲ +2", "No change") and a small trend line from their daily snapshots.
