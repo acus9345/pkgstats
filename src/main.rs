@@ -1180,7 +1180,7 @@ fn report_view(
 
     for chart in &report.charts {
         match chart {
-            Chart::Daily { title, points } => daily_chart(ui, title, points, true),
+            Chart::Daily { title, points } => daily_chart(ui, source.label(), title, points, true),
             Chart::Bars { title, bars } => bar_rows(ui, title, bars),
         }
         ui.add_space(12.0);
@@ -1304,7 +1304,7 @@ fn followed_card(ui: &mut egui::Ui, f: &Followed, metric: Option<String>, busy: 
             let series = f.series(&m);
             ui.add_space(6.0);
             if series.len() >= 2 {
-                daily_chart(ui, &format!("{m}: history"), &series, false);
+                daily_chart(ui, &key, &format!("{m}: history"), &series, false);
             } else {
                 icons::info(ui, "The history chart appears once there are two days of snapshots.");
             }
@@ -1540,7 +1540,8 @@ fn smooth(pts: &[[f64; 2]], steps: usize) -> Vec<[f64; 2]> {
 
 /// Smooth line chart through every day's real value. `in_card` gives it its own
 /// card (report charts); the small Following history chart sits in one already.
-fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], in_card: bool) {
+/// `id` keeps charts with the same title apart, such as two followed repos on Forks.
+fn daily_chart(ui: &mut egui::Ui, id: &str, title: &str, points: &[(String, f64)], in_card: bool) {
     if points.is_empty() {
         return;
     }
@@ -1556,7 +1557,7 @@ fn daily_chart(ui: &mut egui::Ui, title: &str, points: &[(String, f64)], in_card
         ui.label(RichText::new(title).family(theme::semibold()).size(15.0).color(theme::text()));
         ui.add_space(10.0);
 
-        Plot::new(("daily", title))
+        Plot::new(("daily", id, title))
             .height(if in_card { 260.0 } else { 190.0 })
             .show_background(false)
             .grid_color(theme::grid())
@@ -1675,7 +1676,9 @@ fn install_task() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::smooth;
+    use super::{egui, followed_card, smooth};
+    use crate::api::{Kind, Source};
+    use crate::track::Followed;
 
     #[test]
     fn smooth_curve_hits_every_point_without_overshooting() {
@@ -1691,6 +1694,42 @@ mod tests {
             let i = (c[0].floor() as usize).min(pts.len() - 2);
             let (lo, hi) = (pts[i][1].min(pts[i + 1][1]), pts[i][1].max(pts[i + 1][1]));
             assert!((lo - 1e-9..=hi + 1e-9).contains(&c[1]), "{c:?} outside day {i}..{}", i + 1);
+        }
+    }
+
+    /// Two followed items showing the same metric must not share a chart ID, or
+    /// egui paints a red "First use of Plot ID" warning and their zoom state mixes.
+    #[test]
+    fn followed_charts_with_the_same_metric_have_their_own_ids() {
+        let followed = |query: &str| Followed {
+            source: Source::GitHub,
+            kind: Kind::Package,
+            query: query.into(),
+            title: query.into(),
+            url: String::new(),
+            history: [("2026-10-22", 1.0), ("2026-10-23", 2.0)]
+                .into_iter()
+                .map(|(date, v)| (date.to_string(), [("Forks".to_string(), v)].into()))
+                .collect(),
+            last_error: None,
+        };
+        let cards = [followed("a/one"), followed("b/two")];
+
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| o.warn_on_id_clash = true);
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                for f in &cards {
+                    followed_card(ui, f, Some("Forks".into()), false);
+                }
+            });
+            out.textures_delta.clear();
+            let clash = out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text.contains("use of Plot ID")));
+            assert!(!clash, "two charts share an ID");
         }
     }
 }
