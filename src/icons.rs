@@ -257,7 +257,8 @@ pub fn button(ui: &mut Ui, icon: Option<Icon>, text: &str, selected: bool, icon_
 pub fn nav_row(ui: &mut Ui, icon: Option<Icon>, badge: Option<Source>, text: &str, selected: bool) -> Response {
     let font = TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    // Draggable too, so the sidebar can be rearranged; a drag never counts as a click.
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click_and_drag());
 
     if ui.is_rect_visible(rect) {
         let v = ui.style().interact_selectable(&resp, selected);

@@ -11,7 +11,7 @@ mod track;
 
 use api::{Chart, FetchResult, GitHubAccount, Kind, RateLimits, Report, Source};
 use history::History;
-use settings::Settings;
+use settings::{MenuItem, Settings};
 use eframe::egui::{self, RichText};
 use egui_plot::{FilledArea, Line, Plot, PlotPoints};
 use icons::Icon;
@@ -124,6 +124,9 @@ enum Action {
     RemoveHistory(usize),
     ClearHistory,
     OpenAccounts,
+    /// Sidebar drag: move the menu item or followed entry at `.0` to the slot before `.1`.
+    MoveMenuItem(usize, usize),
+    MoveFollowed(usize, usize),
     /// Validate and save a pasted GitHub token.
     ConnectGitHub(String),
     DisconnectGitHub,
@@ -386,6 +389,16 @@ impl App {
                         self.store.record(&key, report);
                     }
                 }
+                self.save_store();
+            }
+            Action::MoveMenuItem(from, to) => {
+                self.settings.move_menu_item(from, to);
+                if let Err(e) = self.settings.save() {
+                    self.status = Some((format!("Could not save settings: {e}"), true));
+                }
+            }
+            Action::MoveFollowed(from, to) => {
+                move_item(&mut self.store.followed, from, to);
                 self.save_store();
             }
             Action::Unfollow(key) => {
@@ -680,36 +693,60 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.add_space(6.0);
-            if icons::nav_row(ui, Some(Icon::Search), None, "Search", self.view == View::Search).clicked() {
-                self.view = View::Search;
-            }
             let following = format!("Following ({})", self.store.followed.len());
-            if icons::nav_row(ui, Some(Icon::Star), None, &following, self.view == View::Following).clicked() {
-                self.view = View::Following;
-            }
-            if icons::nav_row(ui, Some(Icon::Clock), None, "History", self.view == View::History).clicked() {
-                self.view = View::History;
-            }
-            let accounts_label = match &self.account {
+            let token = match &self.account {
                 Some(a) => format!("Token · @{}", a.login),
                 None => "Add token".to_string(),
             };
-            if icons::nav_row(ui, Some(Icon::Link), None, &accounts_label, self.view == View::Accounts).clicked() {
-                action = Some(Action::OpenAccounts);
+            let menu = self.settings.menu.clone();
+            let mut clicked = None;
+            let moved = reorderable(ui, menu.len(), |ui, i| {
+                let (icon, text, selected) = match menu[i] {
+                    MenuItem::Search => (Icon::Search, "Search", self.view == View::Search),
+                    MenuItem::Following => (Icon::Star, following.as_str(), self.view == View::Following),
+                    MenuItem::History => (Icon::Clock, "History", self.view == View::History),
+                    MenuItem::Token => (Icon::Link, token.as_str(), self.view == View::Accounts),
+                    MenuItem::Settings => (Icon::Settings, "Settings", self.show_settings),
+                };
+                let resp = icons::nav_row(ui, Some(icon), None, text, selected);
+                if resp.clicked() {
+                    clicked = Some(menu[i]);
+                }
+                resp
+            });
+            if let Some((from, to)) = moved {
+                action = Some(Action::MoveMenuItem(from, to));
             }
-            if icons::nav_row(ui, Some(Icon::Settings), None, "Settings", self.show_settings).clicked() {
-                self.show_settings = !self.show_settings;
+            match clicked {
+                Some(MenuItem::Search) => self.view = View::Search,
+                Some(MenuItem::Following) => self.view = View::Following,
+                Some(MenuItem::History) => self.view = View::History,
+                Some(MenuItem::Token) => action = Some(Action::OpenAccounts),
+                Some(MenuItem::Settings) => self.show_settings = !self.show_settings,
+                None => {}
             }
 
             if !self.store.followed.is_empty() {
                 heading(ui, "FOLLOWED");
-                for f in &self.store.followed {
-                    let resp = icons::nav_row(ui, None, Some(f.source), &f.title, false);
-                    if resp.on_hover_text(format!("{} · {}", f.source.label(), f.title)).clicked() {
-                        let mut sources = [false; 4];
-                        sources[Source::ALL.iter().position(|&s| s == f.source).unwrap_or(0)] = true;
-                        action = Some(Action::Search(Search { kind: f.kind, query: f.query.clone(), sources }));
+                let followed = &self.store.followed;
+                let mut clicked = None;
+                let moved = reorderable(ui, followed.len(), |ui, i| {
+                    let f = &followed[i];
+                    let resp = icons::nav_row(ui, None, Some(f.source), &f.title, false)
+                        .on_hover_text(format!("{} · {}
+Drag to reorder", f.source.label(), f.title));
+                    if resp.clicked() {
+                        clicked = Some(i);
                     }
+                    resp
+                });
+                if let Some(f) = clicked.map(|i| &followed[i]) {
+                    let mut sources = [false; 4];
+                    sources[Source::ALL.iter().position(|&s| s == f.source).unwrap_or(0)] = true;
+                    action = Some(Action::Search(Search { kind: f.kind, query: f.query.clone(), sources }));
+                }
+                if let Some((from, to)) = moved {
+                    action = Some(Action::MoveFollowed(from, to));
                 }
             }
 
@@ -1491,6 +1528,47 @@ fn sparkline(painter: &egui::Painter, rect: egui::Rect, series: &[(String, f64)]
     }
 }
 
+/// Draws `len` rows with `row` and lets them be dragged into a new order: while a
+/// row is dragged, an accent line shows where it will land. Returns `(from, to)`
+/// when the drag ends somewhere new, `to` being the slot it goes before (0..=len).
+fn reorderable(ui: &mut egui::Ui, len: usize, mut row: impl FnMut(&mut egui::Ui, usize) -> egui::Response) -> Option<(usize, usize)> {
+    let mut rects = Vec::with_capacity(len);
+    let mut dragging = None;
+    let mut dropped = false;
+    for i in 0..len {
+        let resp = row(ui, i);
+        if resp.dragged() || resp.drag_stopped() {
+            dragging = Some(i);
+            dropped = resp.drag_stopped();
+        }
+        rects.push(resp.rect);
+    }
+    let from = dragging?;
+    let pointer = ui.ctx().pointer_latest_pos()?;
+    let to = rects.iter().position(|r| pointer.y < r.center().y).unwrap_or(len);
+    let unchanged = to == from || to == from + 1;
+
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    let painter = ui.painter();
+    painter.rect_filled(rects[from], 6.0, theme::accent().gamma_multiply(0.12));
+    if !unchanged {
+        let y = if to < len { rects[to].top() - 1.0 } else { rects[len - 1].bottom() + 1.0 };
+        painter.hline(rects[from].x_range(), y, egui::Stroke::new(2.0, theme::accent()));
+    }
+    (dropped && !unchanged).then_some((from, to))
+}
+
+/// Moves `v[from]` to the slot before `to`, where `to` counts slots in the list
+/// before the move (0..=len), as [`reorderable`] reports them.
+fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
+    if from >= v.len() {
+        return;
+    }
+    let item = v.remove(from);
+    let to = if to > from { to - 1 } else { to };
+    v.insert(to.min(v.len()), item);
+}
+
 /// Monotone cubic (Fritsch–Carlson) interpolation: a smooth curve through every
 /// point that never overshoots, so counts can't dip below zero between days.
 fn smooth(pts: &[[f64; 2]], steps: usize) -> Vec<[f64; 2]> {
@@ -1676,7 +1754,7 @@ fn install_task() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{egui, followed_card, smooth};
+    use super::{egui, followed_card, move_item, smooth};
     use crate::api::{Kind, Source};
     use crate::track::Followed;
 
@@ -1731,5 +1809,20 @@ mod tests {
             let clash = out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text.contains("use of Plot ID")));
             assert!(!clash, "two charts share an ID");
         }
+    }
+
+    #[test]
+    fn move_item_puts_the_row_before_the_drop_slot() {
+        let moved = |from, to| {
+            let mut v = vec!['a', 'b', 'c', 'd'];
+            move_item(&mut v, from, to);
+            v.into_iter().collect::<String>()
+        };
+        assert_eq!(moved(0, 2), "bacd");
+        assert_eq!(moved(0, 4), "bcda");
+        assert_eq!(moved(3, 0), "dabc");
+        assert_eq!(moved(2, 1), "acbd");
+        assert_eq!(moved(1, 1), "abcd");
+        assert_eq!(moved(9, 0), "abcd");
     }
 }
