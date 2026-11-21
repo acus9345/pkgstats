@@ -3,7 +3,7 @@
 A native desktop app (Rust + [egui](https://github.com/emilk/egui)) that shows developer and package stats from **GitHub**, **npm**, **PyPI** and **crates.io**.
 <img width="1280" height="800" alt="image" src="https://github.com/user-attachments/assets/84074df8-eed5-41dc-a070-4884838314c0" />
 
-(dont mind my things behind**)
+(dont mind my things behind*)
 
 
 ## Install
